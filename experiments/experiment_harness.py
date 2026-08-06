@@ -40,7 +40,13 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Usando dispositivo: {device}")
     
-    model = CoastalPINNModel(num_layers=6, hidden_dim=128).to(device)
+    # Extraer estadísticas para normalización
+    dataset_x = dataloader.dataset.X[:, 0:4]
+    mean_x = dataset_x.mean(dim=0).numpy()
+    std_x = dataset_x.std(dim=0).numpy()
+    print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
+    
+    model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=mean_x, input_std=std_x).to(device)
     physics = CoastalPhysicsPINN(diff_coef=0.1, decay_rate=0.01)
     
     optimizer = optim.Adam(model.parameters(), lr=lr)

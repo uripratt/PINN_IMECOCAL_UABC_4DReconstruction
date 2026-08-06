@@ -8,9 +8,18 @@ class CoastalPINNModel(nn.Module):
     Esta red toma las coordenadas espaciotemporales (x, y, z, t) y predice 
     la concentración de Clorofila-a.
     """
-    def __init__(self, num_layers=6, hidden_dim=128):
+    def __init__(self, num_layers=6, hidden_dim=128, input_mean=None, input_std=None):
         super(CoastalPINNModel, self).__init__()
         
+        # --- NORMALIZACIÓN INTEGRADA ---
+        # Registramos medias y desviaciones como "buffers" (se guardan en el .pth pero no se entrenan)
+        if input_mean is not None and input_std is not None:
+            self.register_buffer('input_mean', torch.tensor(input_mean, dtype=torch.float32))
+            self.register_buffer('input_std', torch.tensor(input_std, dtype=torch.float32))
+            self.normalize = True
+        else:
+            self.normalize = False
+            
         # Entrada: (Latitud, Longitud, Profundidad, Tiempo) = 4 variables
         layers = [nn.Linear(4, hidden_dim), nn.Tanh()]
         
@@ -30,6 +39,10 @@ class CoastalPINNModel(nn.Module):
         x shape: [batch_size, 4]
         return shape: [batch_size, 1]
         """
+        if self.normalize:
+            # Normalización Z-score interna. Autograd aplicará la regla de la cadena automáticamente.
+            x = (x - self.input_mean) / (self.input_std + 1e-8)
+            
         return self.network(x)
 
 if __name__ == "__main__":
