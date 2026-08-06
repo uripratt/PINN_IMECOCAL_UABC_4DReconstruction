@@ -66,6 +66,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
                 # El modelo neuronal solo necesita las 4 coordenadas espaciotemporales
                 x_coords = batch_x_full[:, 0:4].requires_grad_(True)
                 u_velocities = batch_x_full[:, 4:6]
+                bathy = batch_x_full[:, 6:7]
                 
                 optimizer.zero_grad()
                 
@@ -74,7 +75,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
                 loss_data = mse_loss(pred_y, batch_y)
                 
                 # --- PHYSICS LOSS ---
-                loss_physics = physics.compute_physics_loss(model, x_coords, u_velocities)
+                loss_physics = physics.compute_physics_loss(model, x_coords, u_velocities, bathymetry=bathy)
                 
                 # --- TOTAL LOSS ---
                 loss_total = loss_data + lambda_phys * loss_physics

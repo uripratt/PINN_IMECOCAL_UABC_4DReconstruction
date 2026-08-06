@@ -13,7 +13,7 @@ class CoastalPhysicsPINN:
         self.K = diff_coef
         self.R = decay_rate
 
-    def compute_physics_loss(self, model, X, u_velocities):
+    def compute_physics_loss(self, model, X, u_velocities, bathymetry=None):
         """
         Calcula el residuo de la Ecuación Diferencial (Physics Loss) usando autograd.
         
@@ -21,6 +21,7 @@ class CoastalPhysicsPINN:
         - model: La red neuronal (PINN) que predice la Clorofila.
         - X: Tensor de entrada [N, 4] -> (lat, lon, depth, time)
         - u_velocities: Tensor de velocidades [N, 2] -> (u, v) provistas por CMEMS
+        - bathymetry: Tensor de batimetría [N, 1] -> elevación (valores > 0 indican tierra)
         """
         # Es fundamental que las entradas tengan 'requires_grad=True' 
         # para que PyTorch pueda calcular las derivadas parciales.
@@ -66,7 +67,18 @@ class CoastalPhysicsPINN:
         # dC/dt + u*grad(C) = K*laplaciano(C) - R*C
         pde_residual = dC_dtime + advection - diffusion + self.R * C
         
-        # La pérdida física es el error cuadrático medio del residuo
-        loss_physics = torch.mean(pde_residual ** 2)
+        # --- CONDICIÓN DE FRONTERA DIRICHLET (TIERRA FIRME) ---
+        # Si la elevación es > 0 (tierra), forzamos a que la clorofila tienda a 0.
+        if bathymetry is not None:
+            land_mask = (bathymetry > 0).float()
+            ocean_mask = (bathymetry <= 0).float()
+            
+            # Penalización severa si predice clorofila en el continente
+            dirichlet_loss = torch.mean(land_mask * (C ** 2))
+            
+            # La pérdida física solo se aplica al océano
+            loss_physics = torch.mean(ocean_mask * (pde_residual ** 2)) + dirichlet_loss
+        else:
+            loss_physics = torch.mean(pde_residual ** 2)
         
         return loss_physics

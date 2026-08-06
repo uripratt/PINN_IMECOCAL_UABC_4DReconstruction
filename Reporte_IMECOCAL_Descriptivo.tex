@@ -1,0 +1,167 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\renewcommand{\figurename}{Figura}
+\renewcommand{\tablename}{Tabla}
+\renewcommand{\abstractname}{Resumen}
+\usepackage{geometry}
+\geometry{a4paper, margin=2.5cm}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[table,xcdraw]{xcolor}
+\usepackage{hyperref}
+\usepackage{amsmath}
+
+\title{\textbf{Hacia la Reconstrucción 4D Continua de Clorofila-$a$ en la Corriente de California}\\
+\large Análisis Exploratorio de Datos IMECOCAL (1998-2012) y Formulación de Modelos Informados por la Física}
+\author{\textbf{Reporte Científico y Propuesta de Modelado} \\ Programa de Estancias de Investigación}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este trabajo presenta la primera fase de un proyecto cuyo objetivo es la reconstrucción de campos tridimensionales y temporales (4D) continuos de clorofila-$a$ a partir de perfiles verticales de lances de CTD discretos e irregulares. Se analiza el dataset histórico del programa IMECOCAL (1998-2012) en la costa noroccidental de Baja California, compuesto por 123 estaciones oceanográficas. Los perfiles de clorofila-$a$ fueron estandarizados a las profundidades de mayor representatividad estadística (0, 10, 20, 50 y 100 m). El análisis exploratorio revela una marcada atenuación vertical por debajo de la capa de mezcla (0-20 m), la formación estacional del Máximo Profundo de Clorofila (DCM) a ~50 m, y una fuerte modulación interanual y estacional del gradiente costa-océano por eventos ENOS y surgencias costeras. Utilizando esta línea base, se formula el problema de reconstrucción 4D continua mediante el acoplamiento de Redes Neuronales Informadas por la Física (PINNs) con la ecuación de advección-difusión-reacción. Finalmente, se diseña un framework de validación riguroso (Harness) y un flujo de trabajo agéntico colaborativo para guiar el desarrollo e implementación del modelo en las fases subsecuentes.
+\end{abstract}
+
+\section{Introducción}
+La caracterización de la estructura tridimensional del océano y su evolución temporal (4D) representa uno de los mayores desafíos de la oceanografía física y biogeoquímica. Los métodos tradicionales de muestreo in-situ, tales como lances de CTD y botellas Niskin realizados durante campañas oceanográficas, capturan únicamente instantáneas discretas y espacialmente dispersas del estado del mar. En el caso del Pacífico mexicano, el programa Investigaciones Mexicanas de la Corriente de California (IMECOCAL) ha recopilado un valioso registro histórico de perfiles verticales de clorofila-$a$. No obstante, el carácter espaciotemporalmente discontinuo de estos lances limita la comprensión de fenómenos dinámicos de mesoescala y el acoplamiento físico-biológico continuo.
+
+Para superar estas limitaciones, este proyecto tiene como objetivo final **pasar de observaciones discretas y puntuales de perfiles verticales a campos continuos en 4D de clorofila-$a$** a profundidades estándar ($1, 10, 20, 50 \text{ y } 100$ metros). Esta primera fase del proyecto documenta el análisis descriptivo exploratorio de los datos de entrada (estableciendo la línea base de variabilidad y cobertura) y formula conceptualmente la arquitectura matemática de reconstrucción utilizando herramientas de aprendizaje profundo informadas por la física y aprendizaje multimodal.
+
+\section{Metodología de Preparación de Datos}
+El conjunto de datos original consta de perfiles de clorofila-$a$ calibrados a partir de lecturas de fluorescencia in-situ durante campañas científicas cubriendo 123 estaciones oceanográficas únicas organizadas en transectos perpendiculares a la costa (Líneas 97 a 140).
+
+\subsection{Filtrado y Estandarización Vertical}
+Un análisis de la cobertura vertical (esfuerzo de muestreo por nivel de presión) evidenció que más del $90\%$ de los lances poseen registros en la capa superficial (0, 10 y 20 m), disminuyendo al $90.7\%$ a los 50 m y al $83.0\%$ a los 100 m. Sin embargo, los niveles de 150 m ($8.0\%$) y 200 m ($7.4\%$) presentaron una cobertura estadísticamente insuficiente, por lo que fueron excluidos del análisis. 
+
+Para homogenizar la base de datos y construir perfiles comparables, se aplicó un algoritmo de discretización vertical (*snapping*) asignando cada observación a la profundidad estándar más cercana dentro del conjunto $z \in \{0, 10, 20, 50, 100\}$ metros. En caso de existir múltiples lecturas asignadas a un mismo nivel en un único perfil, se calculó su promedio aritmético.
+
+\subsection{Cálculo del Gradiente Costa-Océano}
+Para cuantificar la transición espacial entre las zonas de surgencia costera y las aguas oligotróficas del océano abierto, se calculó la distancia geodésica transversal de cada estación a la costa. Para ello, se identificó la estación más costera (aquella con el menor índice de estación) de cada línea de transecto $L$ como el punto de referencia costero $P_0(L) = (\text{Lat}_0, \text{Lon}_0)$. La distancia $d_i$ de cualquier otra estación $P_i = (\text{Lat}_i, \text{Lon}_i)$ perteneciente a la línea $L$ se estimó mediante la fórmula de Haversine:
+\begin{equation}
+d_i = 2R \arcsin \left( \sqrt{\sin^2\left(\frac{\Delta \text{Lat}}{2}\right) + \cos(\text{Lat}_0)\cos(\text{Lat}_i)\sin^2\left(\frac{\Delta \text{Lon}}{2}\right)} \right)
+\end{equation}
+donde $R = 6371$ km es el radio medio terrestre, $\Delta \text{Lat} = \text{Lat}_i - \text{Lat}_0$ y $\Delta \text{Lon} = \text{Lon}_i - \text{Lon}_0$ en radianes. Las observaciones superficiales ($\le 10$ m) se agruparon en intervalos transversales de 20 km para la construcción de diagramas espacio-temporales y la comparación de anomalías interanuales.
+
+\section{Datos y Dominio Espacial}
+El dominio geográfico de estudio y la ubicación de las estaciones oceanográficas se presentan en la Figura \ref{fig:mapa}, superpuestos a la batimetría regional obtenida del modelo ETOPO1 de la NOAA. La clorofila media en la capa superficial ($\le 10$ m) ilustra el claro contraste espacial, observándose concentraciones significativamente más elevadas ($> 1.5$ mg/m$^3$) adyacentes al litoral de Baja California, asociadas a la plataforma continental y zonas de surgencia activa, frente a condiciones oligotróficas ($< 0.3$ mg/m$^3$) en el dominio oceánico.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{mapa_estaciones.png}
+    \caption{Distribución geográfica de las estaciones de monitoreo IMECOCAL sobre la batimetría regional y la costa noroccidental de Baja California. Las anotaciones (ej. L97) indican las líneas de transecto transversales. El color de los marcadores representa la concentración promedio de clorofila-$a$ superficial ($\le 10$ m).}
+    \label{fig:mapa}
+\end{figure}
+
+\section{Línea Base: Análisis Exploratorio de Datos}
+\subsection{Estructura Vertical Promedio}
+La estructura vertical promedio global de la clorofila-$a$ para todo el registro histórico se presenta en la Figura \ref{fig:perfil_promedio}. El perfil revela una capa de mezcla superficial (0-20 m) homogénea con concentraciones medias de $\sim 1.4$ mg/m$^3$. A partir de los 20 m y hasta los 50 m, se observa una ligera transición vertical. La mediana exhibe un comportamiento estable, lo que indica que los valores elevados en la superficie representan eventos pulsantes de alta productividad (surgencias) reflejados en la asimetría positiva de la desviación estándar y el rango intercuartílico. Por debajo de los 50 m, ocurre una atenuación exponencial drástica debido a la limitación de la radiación fotosintéticamente activa (PAR), convergiendo a valores residuales ($< 0.4$ mg/m$^3$) a los 100 m de profundidad.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.45\textwidth]{perfil_clorofila_promedio.png}
+    \caption{Perfil vertical climatológico promedio de clorofila-$a$ del conjunto de datos IMECOCAL (1998-2012). La línea azul continua representa la media global, la línea naranja discontinua indica la mediana, el sombreado azul oscuro representa el rango intercuartílico (percentiles 25-75\%) y el sombreado azul claro denota la desviación estándar ($\pm$ 1 SD).}
+    \label{fig:perfil_promedio}
+\end{figure}
+
+\subsection{Variabilidad Interanual}
+La descomposición interanual de los perfiles verticales (Figura \ref{fig:anuales}) muestra que la estructura de la columna de agua experimenta forzamientos de gran escala significativos. El año 1998 destaca de forma extrema, presentando perfiles severamente deprimidos con valores promedio en superficie inferiores a $0.5$ mg/m$^3$ y una dispersión espacial mínima. Este colapso de la producción primaria responde al intenso evento de El Niño 1997-1998, el cual indujo un hundimiento anómalo de la termoclina y la nutriclina, bloqueando el aporte de nutrientes hacia la zona fótica a pesar de la persistencia de vientos favorables de surgencia. 
+
+Por el contrario, el periodo de 1999 a 2002 muestra una recuperación masiva de la biomasa fitoplanctónica, coincidiendo con la transición hacia condiciones de La Niña. Durante esta fase fría, la termoclina somera permitió que los eventos de surgencia costera inyectaran aguas ricas en nitratos y fosfatos, lo que propició una alta variabilidad espacial con picos de clorofila que superaron los 10 mg/m$^3$ en las estaciones costeras. En los años posteriores (2003-2012), la región exhibió una alternancia de periodos cálidos y fríos de menor intensidad, manteniendo perfiles promedio intermedios estables.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{grid_anual.png}
+    \caption{Mosaico de perfiles verticales anuales de clorofila-$a$ (1998-2012). Las líneas de color representan perfiles individuales agrupados y coloreados por mes de muestreo. La línea negra sólida ilustra el promedio anual con su correspondiente banda de desviación estándar ($\pm$ 1 SD).}
+    \label{fig:anuales}
+\end{figure}
+
+\subsection{Dinámica Estacional}
+El ciclo estacional de la clorofila-$a$ está íntimamente acoplado al régimen de vientos monzónicos de la región. Durante la primavera (marzo a mayo), la intensificación de los vientos del noroeste genera un transporte neto de Ekman hacia mar abierto, forzando el afloramiento de aguas subsuperficiales frías y ricas en nutrientes a lo largo de la costa. Como se evidencia en la Figura \ref{fig:temporadas}, la primavera presenta sistemáticamente las mayores concentraciones de clorofila en los primeros 20 m de la columna de agua. En verano, el calentamiento solar superficial incrementa la estratificación térmica de la columna de agua, inhibiendo el flujo vertical de nutrientes. Esto provoca una rápida disminución de la biomasa fitoplanctónica superficial. En las estaciones oceánicas del mar abierto, esta estratificación desplaza la productividad hacia capas subsuperficiales, consolidando el Máximo Profundo de Clorofila (DCM) cerca de la nutriclina (~50 m de profundidad).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{grid_temporadas.png}
+    \caption{Perfiles verticales agrupados por temporada climatológica. El color de los perfiles individuales representa el año de muestreo.}
+    \label{fig:temporadas}
+\end{figure}
+
+\subsection{Estructura Transversal y Gradiente Costa-Océano}
+La distribución espacial de la clorofila-$a$ en el Sistema de la Corriente de California exhibe un decaimiento exponencial a medida que aumenta la distancia a la costa. La Figura \ref{fig:gradiente} integra la evolución espacial y temporal de los datos.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{gradiente_costa_anual.png}
+    \caption{Dinámica del gradiente transversal costa-océano de clorofila-$a$ superficial ($\le 10$ m). a) Diagrama de Hovmöller (Espacio-Tiempo) que ilustra la concentración promedio por año y distancia geodésica a la costa (km); las líneas de contorno negras indican umbrales de 0.5, 1.0 y 2.0 mg/m$^3$. b) Perfiles transversales contrastantes de la media climatológica histórica (negro) frente al evento extremo de El Niño 1998 (rojo), La Niña 1999 (azul) y un año neutral 2008 (amarillo).}
+    \label{fig:gradiente}
+\end{figure}
+
+El diagrama de Hovmöller (Figura \ref{fig:gradiente}a) revela que la pluma de alta productividad ($> 1.5$ mg/m$^3$) se encuentra geográficamente confinada a una franja costera de entre 0 y 60 km de ancho. Sin embargo, la extensión mar adentro de esta pluma experimenta fuertes contracciones y expansiones interanuales. Durante los periodos de surgencia intensa bajo la influencia de La Niña (ej. 1999 y 2002), la pluma de clorofila se ensancha significativamente, extendiéndose hasta los 100-120 km de la costa debido a la advección horizontal de filamentos y remolinos costeros. En contraste, durante El Niño 1998, el gradiente colapsa de forma casi absoluta. Este comportamiento extremo se aprecia cuantitativamente en la Figura \ref{fig:gradiente}b. La media climatológica (línea negra) exhibe el perfil de decaimiento típico, partiendo de $\sim 2.2$ mg/m$^3$ en la costa (0-20 km) hasta converger a niveles oligotróficos estables de $\sim 0.3$ mg/m$^3$ más allá de los 150 km. 
+
+\section{Formulación del Problema de Reconstrucción 4D}
+El análisis exploratorio demuestra que los datos in-situ capturan la física de surgencias y la biogeoquímica regional, pero están limitados por vacíos temporales y espaciales. Para transicionar de este conjunto de observaciones discretas $D = \{ (\mathbf{x}_i, t_i, C_i) \}_{i=1}^N$ a un campo continuo $C(\mathbf{x}, t)$, se plantea la formulación matemática y metodológica detallada a continuación.
+
+\subsection{Ecuación Física Gobernante (Transporte de Trazadores)}
+Asumiendo que la clorofila-$a$ actúa como un trazador biológico dinámico en la columna de agua, su evolución espaciotemporal está regida por la ecuación de advección-difusión-reacción en tres dimensiones:
+\begin{equation}
+\frac{\partial C}{\partial t} + u\frac{\partial C}{\partial x} + v\frac{\partial C}{\partial y} + w\frac{\partial C}{\partial z} = \frac{\partial}{\partial x}\left(K_h \frac{\partial C}{\partial x}\right) + \frac{\partial}{\partial y}\left(K_h \frac{\partial C}{\partial y}\right) + \frac{\partial}{\partial z}\left(K_v \frac{\partial C}{\partial z}\right) + S(C, \mathbf{x}, t)
+\end{equation}
+donde $\mathbf{u} = (u, v, w)$ representa el vector de velocidad tridimensional de las corrientes marinas, $K_h$ y $K_v$ son los coeficientes de difusividad turbulenta horizontal y vertical respectivamente, y $S(C, \mathbf{x}, t)$ describe la tasa neta de producción biológica (crecimiento neto del fitoplancton menos pastoreo y mortalidad) acoplada a la luz (radiación solar fotosintética) y la disponibilidad de nutrientes limitantes (ej. nitratos).
+
+\subsection{Revisión de Enfoques Tecnológicos de la Literatura}
+Para resolver esta ecuación y reconstruir el campo continuo, la literatura oceanográfica y de aprendizaje automático propone dos aproximaciones principales:
+
+1.  **Modelado Multimodal y Transformers Perfil-Superficie (Profile-Surface Transformers):**
+    Esta aproximación infiere la estructura vertical de la clorofila combinando datos continuos de la superficie (como mapas de temperatura superficial del mar SST satelital, anomalías de nivel del mar SLA y clorofila-a superficial satelital libre de nubes) con perfiles subsuperficiales escasos (como floats BGC-Argo o lances CTD). Los modelos basados en Transformers o redes de convolución profunda aprenden las correlaciones estadísticas y estructurales espaciotemporales no lineales para proyectar la información superficial hacia la profundidad.
+2.  **Redes Neuronales Informadas por la Física (PINNs):**
+    Una PINN representa el campo continuo aproximándolo mediante una red neuronal profunda $\hat{C}(\mathbf{x}, t; \theta)$ con parámetros ajustables $\theta$. La consistencia física se garantiza incorporando la ecuación de transporte como regularización en la función de pérdida:
+    \begin{equation}
+    \mathcal{L}(\theta) = \mathcal{L}_{\text{data}}(\theta) + \lambda_p \mathcal{L}_{\text{physics}}(\theta)
+    \end{equation}
+    donde la pérdida de datos y de la física se definen como:
+    \begin{equation}
+    \mathcal{L}_{\text{data}}(\theta) = \frac{1}{N}\sum_{i=1}^N \left| \hat{C}(\mathbf{x}_i, t_i; \theta) - C_i \right|^2
+    \end{equation}
+    \begin{equation}
+    \mathcal{L}_{\text{physics}}(\theta) = \frac{1}{M}\sum_{j=1}^M \left| \mathcal{R}\left(\hat{C}(\mathbf{x}_j, t_j; \theta); \mathbf{u}, K, S\right) \right|^2
+    \end{equation}
+    donde $\mathcal{R}$ es el residuo de la ecuación diferencial evaluado en un conjunto de puntos colocalizados virtuales $\mathbf{x}_j$. Este enfoque permite asimilar los perfiles dispersos de IMECOCAL y reconstruir campos 3D consistentes con la dinámica de fluidos marina sin requerir una rejilla numérica rígida.
+
+\section{Estrategia de Modelado y Framework de Validación}
+Con el fin de asegurar un desarrollo ágil, eficiente y metodológicamente riguroso, la implementación de la fase de modelado se estructurará bajo un framework de tres arneses de software (Harness) coordinados por una arquitectura de agentes virtuales de IA (según lo definido en el plan del proyecto \texttt{agents.md}):
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \textbf{Suite de Validación (Harness)}
+        \begin{itemize}
+            \item \textbf{Test Harness:} Verifica de forma unitaria los operadores diferenciales de PyTorch, evitando inestabilidades numéricas en la física.
+            \item \textbf{Evaluation Harness:} Aplica validación cruzada espacial (omitir líneas de transecto completas) y temporal (omitir años completos) midiendo RMSE y sesgo.
+            \item \textbf{Experiment Harness:} Registra hiperparámetros, pesos de pérdidas físicas y curvas de entrenamiento.
+        \end{itemize}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \textbf{Flujo de Trabajo Agéntico}
+        \begin{itemize}
+            \item \textbf{Agente 1 (Datos):} Curación e integración de covariables satelitales (Copernicus SST, altimetría).
+            \item \textbf{Agente 2 (Física):} Codificación de la pérdida basada en transporte diferencial.
+            \item \textbf{Agente 3 (Modelos):} Diseño del optimizador y entrenamiento del PINN/Transformer.
+            \item \textbf{Agente 4 (Validación):} Ejecución del arnés de métricas y renderizado de campos 4D.
+        \end{itemize}
+    \end{minipage}
+\end{figure}
+
+\section{Esfuerzo de Muestreo Histórico}
+La Tabla \ref{tab:esfuerzo} detalla la matriz de cobertura para las 123 estaciones analizadas en el periodo 1998-2012. Cada celda indica el número total de perfiles de clorofila procesados por estación y año. Las celdas sombreadas en verde pastel corresponden a las tres estaciones que registraron los picos máximos absolutos de clorofila en la columna de agua para cada año, permitiendo mapear los centros de alta producción biológica primaria de la región.
+
+\input{tabla_esfuerzo_latex.tex}
+
+\end{document}
