@@ -20,9 +20,16 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
     print("Iniciando Experiment Harness (PINN Training)...")
     
     # 1. Configurar MLflow
-    mlruns_dir = os.path.join(os.path.dirname(__file__), 'mlruns')
-    os.makedirs(mlruns_dir, exist_ok=True)
-    mlflow.set_tracking_uri(f"file://{mlruns_dir}")
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        print(f"Conectando al servidor MLflow remoto: {tracking_uri}")
+        mlflow.set_tracking_uri(tracking_uri)
+    else:
+        mlruns_dir = os.path.join(os.path.dirname(__file__), 'mlruns')
+        os.makedirs(mlruns_dir, exist_ok=True)
+        print(f"Usando MLflow local: {mlruns_dir}")
+        mlflow.set_tracking_uri(f"file://{mlruns_dir}")
+        
     mlflow.set_experiment("PINNs_BajaCalifornia")
     
     # 2. Cargar DataLoader
@@ -106,5 +113,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
         print(f"Artefactos y métricas registradas en {mlruns_dir}")
 
 if __name__ == "__main__":
-    # Test inicial de 3 epochs para verificar el Experiment Harness
-    train_pinn(epochs=3, batch_size=256)
+    # Entrenamiento Completo en Servidor (Fase Gold)
+    # - 5000 epochs para permitir que la red minimice el error físico y de datos.
+    # - Batch size más grande (1024) para aprovechar la VRAM de la GPU del servidor.
+    # - El peso de la física subirá lentamente durante los primeros 2000 epochs.
+    train_pinn(epochs=5000, batch_size=1024, lr=1e-3, curriculum_epochs=2000)
