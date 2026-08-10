@@ -11,8 +11,8 @@ def run_battery():
     # Definimos la grilla de hiperparámetros a explorar.
     # 3000 epochs es suficiente para ver la tendencia de estabilización post-curriculum (paso 1500)
     configs = [
-        # 1. Baseline conservador: LR más bajo para evitar los picos de Adam, más puntos de colocación.
-        {"name": "LR_Bajo_Mucha_Fisica", "lr": 5e-4, "colloc_ratio": 6, "batch_size": 512, "epochs": 3000, "curriculum": 1500, "lbfgs": 200},
+        # 1. Baseline conservador (YA COMPLETADO EN EL SERVIDOR)
+        # {"name": "LR_Bajo_Mucha_Fisica", "lr": 5e-4, "colloc_ratio": 6, "batch_size": 512, "epochs": 3000, "curriculum": 1500, "lbfgs": 200},
         
         # 2. Batch Gigante: Estabiliza el gradiente al promediar más puntos a la vez (si la VRAM lo permite).
         {"name": "Batch_Gigante_Rapido", "lr": 1e-3, "colloc_ratio": 2, "batch_size": 2048, "epochs": 3000, "curriculum": 1500, "lbfgs": 200},
