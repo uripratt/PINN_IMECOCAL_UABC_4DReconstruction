@@ -57,11 +57,11 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_bathy))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4):
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lbfgs_epochs=0):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
-    El parámetro `colloc_ratio` define cuántos puntos de tierra se generan por cada punto empírico.
+    Incluye una fase final opcional con L-BFGS para eliminar oscilaciones.
     """
     print("Iniciando Experiment Harness (PINN Training)...")
     
@@ -173,6 +173,77 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 "lambda_phys": lambda_phys
             }, step=epoch)
             
+        # ==========================================
+        # FASE 2: Refinamiento con L-BFGS
+        # ==========================================
+        if lbfgs_epochs > 0:
+            print(f"\nIniciando refinamiento de {lbfgs_epochs} epochs con optimizador L-BFGS...")
+            optimizer_lbfgs = optim.LBFGS(model.parameters(), 
+                                          lr=0.1, 
+                                          max_iter=20, 
+                                          tolerance_grad=1e-7, 
+                                          tolerance_change=1e-9, 
+                                          history_size=50)
+            
+            # Usamos el peso final del curriculum
+            lambda_phys_final = 0.1 
+            
+            for epoch in range(epochs, epochs + lbfgs_epochs):
+                model.train()
+                epoch_data_loss = 0.0
+                epoch_physics_loss = 0.0
+                
+                pbar = tqdm(dataloader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
+                for batch_x_full, batch_y in pbar:
+                    batch_x_full = batch_x_full.to(device)
+                    batch_y = batch_y.to(device)
+                    
+                    if land_data is not None:
+                        num_colloc = batch_x_full.shape[0] * colloc_ratio
+                        colloc_x_full = get_collocation_batch(land_data, num_colloc, max_time_days, max_depth, device)
+                        physics_x_full = torch.cat([batch_x_full, colloc_x_full], dim=0)
+                    else:
+                        physics_x_full = batch_x_full
+                    
+                    x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
+                    u_velocities_phys = physics_x_full[:, 4:6]
+                    bathy_phys = physics_x_full[:, 6:7]
+                    x_coords_data = batch_x_full[:, 0:4].to(device)
+                    
+                    def closure():
+                        optimizer_lbfgs.zero_grad()
+                        pred_y = model(x_coords_data)
+                        loss_d = mse_loss(pred_y, batch_y)
+                        loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys)
+                        loss_t = loss_d + lambda_phys_final * loss_p
+                        loss_t.backward()
+                        return loss_t
+                    
+                    # L-BFGS ejecuta el closure múltiples veces internamente
+                    optimizer_lbfgs.step(closure)
+                    
+                    # Recalculamos loss para logging sin afectar los gradientes
+                    with torch.no_grad():
+                        pred_y = model(x_coords_data)
+                        l_data = mse_loss(pred_y, batch_y).item()
+                        # El physics loss requiere gradientes temporalmente
+                    with torch.enable_grad():
+                        l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys).item()
+                        
+                    epoch_data_loss += l_data
+                    epoch_physics_loss += l_phys
+                    pbar.set_postfix({"L_data": f"{l_data:.4f}", "L_phys": f"{l_phys:.4f}"})
+                
+                avg_data_loss = epoch_data_loss / len(dataloader)
+                avg_phys_loss = epoch_physics_loss / len(dataloader)
+                
+                mlflow.log_metrics({
+                    "Data_Loss": avg_data_loss,
+                    "Physics_Loss": avg_phys_loss,
+                    "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss,
+                    "lambda_phys": lambda_phys_final
+                }, step=epoch)
+                
         print("Entrenamiento completado. Guardando modelo...")
         model_path = os.path.join(os.path.dirname(__file__), "pinn_model_final.pth")
         torch.save(model.state_dict(), model_path)
@@ -181,7 +252,5 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
 
 if __name__ == "__main__":
     # Entrenamiento Completo en Servidor (Fase Gold)
-    # - 5000 epochs para permitir que la red minimice el error físico y de datos.
-    # - Batch size más grande (1024) para aprovechar la VRAM de la GPU del servidor.
-    # - El peso de la física subirá lentamente durante los primeros 2000 epochs.
-    train_pinn(epochs=5000, batch_size=1024, lr=1e-3, curriculum_epochs=2000)
+    # Incluye fase Adam + fase L-BFGS
+    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=4, lbfgs_epochs=500)
