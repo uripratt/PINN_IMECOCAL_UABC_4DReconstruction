@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.data_ingestion.dataloader import get_dataloader
 from src.models.pinn_model import CoastalPINNModel
 from src.physics.physics_loss import CoastalPhysicsPINN
+from experiments.plot_inference import plot_continuous_field
+import matplotlib.pyplot as plt
 
 def load_land_points():
     """Carga las coordenadas de tierra firme desde el archivo ETOPO."""
@@ -115,6 +117,10 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             "hidden_dim": 128
         })
         
+        history_data_loss = []
+        history_phys_loss = []
+        history_steps = []
+        
         for epoch in range(epochs):
             model.train()
             epoch_data_loss = 0.0
@@ -172,6 +178,10 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss,
                 "lambda_phys": lambda_phys
             }, step=epoch)
+            
+            history_data_loss.append(avg_data_loss)
+            history_phys_loss.append(avg_phys_loss)
+            history_steps.append(epoch)
             
         # ==========================================
         # FASE 2: Refinamiento con L-BFGS
@@ -245,10 +255,37 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     "lambda_phys": lambda_phys_final
                 }, step=epoch)
                 
+                history_data_loss.append(avg_data_loss)
+                history_phys_loss.append(avg_phys_loss)
+                history_steps.append(epoch)
+                
         print("Entrenamiento completado. Guardando modelo...")
         model_path = os.path.join(os.path.dirname(__file__), "pinn_model_final.pth")
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
+        
+        # Generar y guardar gráfico de métricas
+        plt.figure(figsize=(10, 6))
+        plt.plot(history_steps, history_data_loss, label='Data Loss', color='blue')
+        plt.plot(history_steps, history_phys_loss, label='Physics Loss', color='red')
+        plt.yscale('log')
+        plt.title('Convergencia del Entrenamiento PINN 4D')
+        plt.xlabel('Epochs')
+        plt.ylabel('Pérdida (Log Scale)')
+        plt.grid(True, which="both", ls="--", alpha=0.5)
+        plt.legend()
+        metrics_file = os.path.join(os.path.dirname(__file__), "training_metrics_convergence.png")
+        plt.savefig(metrics_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        mlflow.log_artifact(metrics_file)
+        
+        # Generar inferencia espacial y guardar el mapa
+        print("Generando mapa de inferencia final para MLflow...")
+        lat_bnds = [23.82, 32.75]
+        lon_bnds = [-119.85, -111.92]
+        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200)
+        mlflow.log_artifact(inference_file)
+        
         print(f"Artefactos y métricas registradas en {tracking_uri if tracking_uri else mlruns_dir}")
 
 if __name__ == "__main__":

@@ -96,6 +96,7 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     plt.close()
     
     print(f"✅ Inferencia completada. Mapa de alta resolución guardado en: {out_file}")
+    return out_file
 
 if __name__ == "__main__":
     # Dominio de Baja California (IMECOCAL + CMEMS Subset)
