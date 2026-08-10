@@ -4,6 +4,8 @@ import torch
 import torch.optim as optim
 import mlflow
 from tqdm import tqdm
+import numpy as np
+import xarray as xr
 
 # Asegurar que se puede importar src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -12,10 +14,54 @@ from src.data_ingestion.dataloader import get_dataloader
 from src.models.pinn_model import CoastalPINNModel
 from src.physics.physics_loss import CoastalPhysicsPINN
 
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
+def load_land_points():
+    """Carga las coordenadas de tierra firme desde el archivo ETOPO."""
+    bathy_file = os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc')
+    if not os.path.exists(bathy_file):
+        print("Advertencia: No se encontró etopo_bathymetry.nc. No se usarán puntos de colocación terrestres.")
+        return None
+    ds = xr.open_dataset(bathy_file)
+    var_name = 'altitude' if 'altitude' in ds else 'elevation'
+    lats = ds.latitude.values
+    lons = ds.longitude.values
+    Lon, Lat = np.meshgrid(lons, lats)
+    elev = ds[var_name].values
+    
+    mask = elev > 0
+    land_lats = Lat[mask]
+    land_lons = Lon[mask]
+    land_elevs = elev[mask]
+    ds.close()
+    return land_lats, land_lons, land_elevs
+
+def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, device):
+    """Genera un batch de puntos aleatorios sobre tierra firme para imponer Dirichlet."""
+    land_lats, land_lons, land_elevs = land_data
+    
+    # Muestrear aleatoriamente 'batch_size' índices
+    indices = np.random.choice(len(land_lats), batch_size, replace=True)
+    
+    batch_lats = land_lats[indices]
+    batch_lons = land_lons[indices]
+    batch_bathy = land_elevs[indices]
+    
+    # Muestrear tiempo y profundidad aleatoriamente
+    batch_times = np.random.uniform(0, max_time_days, batch_size)
+    batch_depths = np.random.uniform(0, max_depth, batch_size)
+    
+    # u y v son 0 en tierra
+    batch_u = np.zeros(batch_size)
+    batch_v = np.zeros(batch_size)
+    
+    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, bathy)
+    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_bathy))
+    return torch.tensor(X_numpy, dtype=torch.float32).to(device)
+
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
+    El parámetro `colloc_ratio` define cuántos puntos de tierra se generan por cada punto empírico.
     """
     print("Iniciando Experiment Harness (PINN Training)...")
     
@@ -35,6 +81,12 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
     # 2. Cargar DataLoader
     print("Preparando DataLoader...")
     dataloader = get_dataloader(batch_size=batch_size, shuffle=True)
+    
+    max_time_days = dataloader.dataset.df['time_days'].max()
+    max_depth = dataloader.dataset.df['Profundidad'].max()
+    
+    print("Cargando malla de tierra para Puntos de Colocación...")
+    land_data = load_land_points()
     
     # 3. Inicializar Arquitectura (Agent 3) y Física (Agent 2)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,6 +108,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
         mlflow.log_params({
             "epochs": epochs,
             "batch_size": batch_size,
+            "colloc_ratio": colloc_ratio,
             "learning_rate": lr,
             "curriculum_epochs": curriculum_epochs,
             "model_layers": 6,
@@ -74,21 +127,29 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5):
             for batch_x_full, batch_y in pbar:
                 batch_x_full = batch_x_full.to(device)
                 batch_y = batch_y.to(device)
+                # --- INYECCIÓN DE PUNTOS DE COLOCACIÓN (TIERRA FIRME) ---
+                if land_data is not None:
+                    # Generamos puntos de tierra proporcionales al batch (ej. 4x más puntos de tierra)
+                    num_colloc = batch_x_full.shape[0] * colloc_ratio
+                    colloc_x_full = get_collocation_batch(land_data, num_colloc, max_time_days, max_depth, device)
+                    physics_x_full = torch.cat([batch_x_full, colloc_x_full], dim=0)
+                else:
+                    physics_x_full = batch_x_full
                 
-                # Desacoplar tensores: (Lat, Lon, Prof, Tiempo, u, v, bathy)
-                # El modelo neuronal solo necesita las 4 coordenadas espaciotemporales
-                x_coords = batch_x_full[:, 0:4].requires_grad_(True)
-                u_velocities = batch_x_full[:, 4:6]
-                bathy = batch_x_full[:, 6:7]
+                # Desacoplar tensores físicos (sobre la unión del mar y tierra)
+                x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
+                u_velocities_phys = physics_x_full[:, 4:6]
+                bathy_phys = physics_x_full[:, 6:7]
                 
                 optimizer.zero_grad()
                 
-                # --- DATA LOSS ---
-                pred_y = model(x_coords)
+                # --- DATA LOSS (Solo empíricos) ---
+                x_coords_data = batch_x_full[:, 0:4].to(device)
+                pred_y = model(x_coords_data)
                 loss_data = mse_loss(pred_y, batch_y)
                 
-                # --- PHYSICS LOSS ---
-                loss_physics = physics.compute_physics_loss(model, x_coords, u_velocities, bathymetry=bathy)
+                # --- PHYSICS LOSS (Empíricos + Tierra firme) ---
+                loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys)
                 
                 # --- TOTAL LOSS ---
                 loss_total = loss_data + lambda_phys * loss_physics

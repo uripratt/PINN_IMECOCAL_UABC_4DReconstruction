@@ -19,15 +19,18 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     """
     print("Cargando arquitectura PINN...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CoastalPINNModel(num_layers=6, hidden_dim=128).to(device)
-    
-    if not os.path.exists(model_path):
-        print(f"[!] Error: No se encuentra el modelo entrenado en {model_path}")
-        print("Asegúrate de haber completado el entrenamiento (experiment_harness.py) primero.")
-        return
-        
     # Cargar los pesos entrenados
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    state_dict = torch.load(model_path, map_location=device)
+    
+    # Extraer parámetros de normalización si existen en el modelo guardado
+    if 'input_mean' in state_dict and 'input_std' in state_dict:
+        input_mean = state_dict['input_mean'].cpu().numpy()
+        input_std = state_dict['input_std'].cpu().numpy()
+        model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std).to(device)
+    else:
+        model = CoastalPINNModel(num_layers=6, hidden_dim=128).to(device)
+        
+    model.load_state_dict(state_dict)
     model.eval()
 
     # 1. Generar malla espacial densa (Resolution x Resolution)

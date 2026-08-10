@@ -53,4 +53,4 @@ def plot_training_metrics(mlruns_dir="mlruns"):
 
 if __name__ == "__main__":
     current_dir = os.path.dirname(__file__)
-    plot_training_metrics(os.path.join(current_dir, "mlruns"))
+    plot_training_metrics(os.path.join(current_dir, "mlruns/mlruns_server/mlruns"))
