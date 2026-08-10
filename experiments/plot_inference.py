@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.models.pinn_model import CoastalPINNModel
 
-def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=100.0, resolution=200):
+def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=100.0, resolution=200, run_name=""):
     """
     Genera predicciones en una malla 2D espaciotemporal continua utilizando la PINN entrenada,
     y visualiza el resultado para evaluar la reconstrucción física (mesh-free).
@@ -91,7 +91,8 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     plt.title(f'Reconstrucción 4D - Campo Continuo de Clorofila-a (PINN)\\nProfundidad: {depth} m | Día Simulado: {int(time_day)}', fontsize=14, pad=15)
     
     # Guardar en alta calidad
-    out_file = os.path.join(os.path.dirname(__file__), f"pinn_inference_z{int(depth)}_t{int(time_day)}.png")
+    prefix = f"{run_name}_" if run_name else ""
+    out_file = os.path.join(os.path.dirname(__file__), f"{prefix}pinn_inference_z{int(depth)}_t{int(time_day)}.png")
     plt.savefig(out_file, dpi=300, bbox_inches='tight')
     plt.close()
     

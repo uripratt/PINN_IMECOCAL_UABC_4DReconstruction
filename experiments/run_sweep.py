@@ -42,7 +42,8 @@ def run_battery():
             lr=cfg["lr"],
             curriculum_epochs=cfg["curriculum"],
             colloc_ratio=cfg["colloc_ratio"],
-            lbfgs_epochs=cfg["lbfgs"]
+            lbfgs_epochs=cfg["lbfgs"],
+            run_name=cfg["name"]
         )
         time.sleep(3) # Pausa para asegurar escritura de MLflow
         

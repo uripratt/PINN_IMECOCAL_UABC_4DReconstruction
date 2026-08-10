@@ -59,7 +59,7 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_bathy))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lbfgs_epochs=0):
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lbfgs_epochs=0, run_name="PINN_Training"):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
@@ -106,7 +106,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     optimizer = optim.Adam(model.parameters(), lr=lr)
     mse_loss = torch.nn.MSELoss()
     
-    with mlflow.start_run(run_name="PINN_Curriculum_Learning"):
+    with mlflow.start_run(run_name=run_name):
         mlflow.log_params({
             "epochs": epochs,
             "batch_size": batch_size,
@@ -260,7 +260,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 history_steps.append(epoch)
                 
         print("Entrenamiento completado. Guardando modelo...")
-        model_path = os.path.join(os.path.dirname(__file__), "pinn_model_final.pth")
+        model_path = os.path.join(os.path.dirname(__file__), f"pinn_model_{run_name}.pth")
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
         
@@ -274,7 +274,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         plt.ylabel('Pérdida (Log Scale)')
         plt.grid(True, which="both", ls="--", alpha=0.5)
         plt.legend()
-        metrics_file = os.path.join(os.path.dirname(__file__), "training_metrics_convergence.png")
+        metrics_file = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.png")
         plt.savefig(metrics_file, dpi=300, bbox_inches='tight')
         plt.close()
         mlflow.log_artifact(metrics_file)
@@ -283,7 +283,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         print("Generando mapa de inferencia final para MLflow...")
         lat_bnds = [23.82, 32.75]
         lon_bnds = [-119.85, -111.92]
-        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200)
+        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200, run_name=run_name)
         mlflow.log_artifact(inference_file)
         
         print(f"Artefactos y métricas registradas en {tracking_uri if tracking_uri else mlruns_dir}")
