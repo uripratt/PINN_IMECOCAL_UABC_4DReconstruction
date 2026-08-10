@@ -183,7 +183,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                                           max_iter=20, 
                                           tolerance_grad=1e-7, 
                                           tolerance_change=1e-9, 
-                                          history_size=50)
+                                          history_size=50,
+                                          line_search_fn="strong_wolfe")
             
             # Usamos el peso final del curriculum
             lambda_phys_final = 0.1 
@@ -248,7 +249,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         model_path = os.path.join(os.path.dirname(__file__), "pinn_model_final.pth")
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
-        print(f"Artefactos y métricas registradas en {mlruns_dir}")
+        print(f"Artefactos y métricas registradas en {tracking_uri if tracking_uri else mlruns_dir}")
 
 if __name__ == "__main__":
     # Entrenamiento Completo en Servidor (Fase Gold)

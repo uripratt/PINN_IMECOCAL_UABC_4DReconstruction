@@ -50,11 +50,14 @@ def run_battery():
     mlruns_dir = os.path.join(os.path.dirname(__file__), 'mlruns')
     tar_path = os.path.join(os.path.dirname(__file__), 'sweep_mlruns.tar.gz')
     
-    with tarfile.open(tar_path, "w:gz") as tar:
-        tar.add(mlruns_dir, arcname="mlruns")
-        
-    print(f"\n¡Batería completada con éxito!")
-    print(f"Por favor, descarga el archivo: {tar_path} y compártelo para el análisis.")
+    if os.path.exists(mlruns_dir):
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(mlruns_dir, arcname="mlruns")
+        print(f"\n¡Batería completada con éxito!")
+        print(f"Por favor, descarga el archivo: {tar_path} y compártelo para el análisis.")
+    else:
+        print("\n¡Batería completada con éxito!")
+        print("MLflow logging fue remoto o no se guardó localmente. No hay archivo para comprimir.")
 
 if __name__ == "__main__":
     run_battery()
