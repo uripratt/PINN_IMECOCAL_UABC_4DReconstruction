@@ -10,7 +10,7 @@ import xarray as xr
 # Asegurar que se puede importar src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data_ingestion.dataloader import get_dataloader
+from src.data_ingestion.dataloader import get_dataloaders
 from src.models.pinn_model import CoastalPINNModel
 from src.physics.physics_loss import CoastalPhysicsPINN
 from experiments.plot_inference import plot_continuous_field
@@ -81,11 +81,11 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     mlflow.set_experiment("PINNs_BajaCalifornia")
     
     # 2. Cargar DataLoader
-    print("Preparando DataLoader...")
-    dataloader = get_dataloader(batch_size=batch_size, shuffle=True)
+    print("Preparando DataLoaders (Train/Test Split)...")
+    train_loader, test_loader = get_dataloaders(batch_size=batch_size)
     
-    max_time_days = dataloader.dataset.df['time_days'].max()
-    max_depth = dataloader.dataset.df['Profundidad'].max()
+    max_time_days = train_loader.dataset.df['time_days'].max()
+    max_depth = train_loader.dataset.df['Profundidad'].max()
     
     print("Cargando malla de tierra para Puntos de Colocación...")
     land_data = load_land_points()
@@ -94,8 +94,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Usando dispositivo: {device}")
     
-    # Extraer estadísticas para normalización
-    dataset_x = dataloader.dataset.X[:, 0:4]
+    # Extraer estadísticas para normalización (solo del train set para evitar data leakage)
+    dataset_x = train_loader.dataset.X[:, 0:4]
     mean_x = dataset_x.mean(dim=0).numpy()
     std_x = dataset_x.std(dim=0).numpy()
     print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
@@ -119,6 +119,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         
         history_data_loss = []
         history_phys_loss = []
+        history_test_loss = []
         history_steps = []
         
         for epoch in range(epochs):
@@ -129,7 +130,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             # Curriculum Learning: El peso de la física aumenta gradualmente
             lambda_phys = (epoch / curriculum_epochs) * 0.1 if epoch < curriculum_epochs else 0.1
                 
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
             for batch_x_full, batch_y in pbar:
                 batch_x_full = batch_x_full.to(device)
                 batch_y = batch_y.to(device)
@@ -168,19 +169,34 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 
                 pbar.set_postfix({"L_data": f"{loss_data.item():.4f}", "L_phys": f"{loss_physics.item():.4f}"})
             
-            # Promedios del epoch
-            avg_data_loss = epoch_data_loss / len(dataloader)
-            avg_phys_loss = epoch_physics_loss / len(dataloader)
+            # Promedios del epoch (Train)
+            avg_data_loss = epoch_data_loss / len(train_loader)
+            avg_phys_loss = epoch_physics_loss / len(train_loader)
+            
+            # --- EVALUACIÓN (TEST SET) ---
+            model.eval()
+            epoch_test_loss = 0.0
+            with torch.no_grad():
+                for test_x, test_y in test_loader:
+                    test_x = test_x.to(device)
+                    test_y = test_y.to(device)
+                    x_coords_test = test_x[:, 0:4]
+                    pred_test = model(x_coords_test)
+                    loss_test = mse_loss(pred_test, test_y)
+                    epoch_test_loss += loss_test.item()
+            avg_test_loss = epoch_test_loss / len(test_loader)
             
             mlflow.log_metrics({
                 "Data_Loss": avg_data_loss,
                 "Physics_Loss": avg_phys_loss,
+                "Test_Loss": avg_test_loss,
                 "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss,
                 "lambda_phys": lambda_phys
             }, step=epoch)
             
             history_data_loss.append(avg_data_loss)
             history_phys_loss.append(avg_phys_loss)
+            history_test_loss.append(avg_test_loss)
             history_steps.append(epoch)
             
         # ==========================================
@@ -188,13 +204,6 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         # ==========================================
         if lbfgs_epochs > 0:
             print(f"\nIniciando refinamiento de {lbfgs_epochs} epochs con optimizador L-BFGS...")
-            optimizer_lbfgs = optim.LBFGS(model.parameters(), 
-                                          lr=0.1, 
-                                          max_iter=20, 
-                                          tolerance_grad=1e-7, 
-                                          tolerance_change=1e-9, 
-                                          history_size=50,
-                                          line_search_fn="strong_wolfe")
             
             # Usamos el peso final del curriculum
             lambda_phys_final = 0.1 
@@ -204,8 +213,19 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 epoch_data_loss = 0.0
                 epoch_physics_loss = 0.0
                 
-                pbar = tqdm(dataloader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
+                pbar = tqdm(train_loader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
+                nan_detected = False
                 for batch_x_full, batch_y in pbar:
+                    # Re-inicializar L-BFGS por cada mini-batch para no arrastrar
+                    # historial del Hessiano inválido de batches anteriores.
+                    optimizer_lbfgs = optim.LBFGS(model.parameters(), 
+                                                  lr=0.01, 
+                                                  max_iter=20, 
+                                                  tolerance_grad=1e-7, 
+                                                  tolerance_change=1e-9, 
+                                                  history_size=50,
+                                                  line_search_fn="strong_wolfe")
+                    
                     batch_x_full = batch_x_full.to(device)
                     batch_y = batch_y.to(device)
                     
@@ -230,6 +250,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         loss_t.backward()
                         return loss_t
                     
+                    # Guardamos el estado antes del step por si da NaN
+                    prev_state = {k: v.clone() for k, v in model.state_dict().items()}
+                    
                     # L-BFGS ejecuta el closure múltiples veces internamente
                     optimizer_lbfgs.step(closure)
                     
@@ -237,26 +260,49 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     with torch.no_grad():
                         pred_y = model(x_coords_data)
                         l_data = mse_loss(pred_y, batch_y).item()
-                        # El physics loss requiere gradientes temporalmente
                     with torch.enable_grad():
                         l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys).item()
+                        
+                    if np.isnan(l_data) or np.isnan(l_phys):
+                        print("\n[Advertencia] NaN detectado en L-BFGS. Revirtiendo pesos y cancelando L-BFGS para esta run.")
+                        model.load_state_dict(prev_state)
+                        nan_detected = True
+                        break
                         
                     epoch_data_loss += l_data
                     epoch_physics_loss += l_phys
                     pbar.set_postfix({"L_data": f"{l_data:.4f}", "L_phys": f"{l_phys:.4f}"})
                 
-                avg_data_loss = epoch_data_loss / len(dataloader)
-                avg_phys_loss = epoch_physics_loss / len(dataloader)
+                if nan_detected:
+                    break
+                
+                avg_data_loss = epoch_data_loss / len(train_loader)
+                avg_phys_loss = epoch_physics_loss / len(train_loader)
+                
+                # --- EVALUACIÓN (TEST SET) L-BFGS ---
+                model.eval()
+                epoch_test_loss = 0.0
+                with torch.no_grad():
+                    for test_x, test_y in test_loader:
+                        test_x = test_x.to(device)
+                        test_y = test_y.to(device)
+                        x_coords_test = test_x[:, 0:4]
+                        pred_test = model(x_coords_test)
+                        loss_test = mse_loss(pred_test, test_y)
+                        epoch_test_loss += loss_test.item()
+                avg_test_loss = epoch_test_loss / len(test_loader)
                 
                 mlflow.log_metrics({
                     "Data_Loss": avg_data_loss,
                     "Physics_Loss": avg_phys_loss,
+                    "Test_Loss": avg_test_loss,
                     "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss,
                     "lambda_phys": lambda_phys_final
                 }, step=epoch)
                 
                 history_data_loss.append(avg_data_loss)
                 history_phys_loss.append(avg_phys_loss)
+                history_test_loss.append(avg_test_loss)
                 history_steps.append(epoch)
                 
         print("Entrenamiento completado. Guardando modelo...")
@@ -264,9 +310,22 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
         
+        # Guardar métricas sin procesar en un CSV local
+        import pandas as pd
+        metrics_df = pd.DataFrame({
+            'Epoch': history_steps,
+            'Data_Loss': history_data_loss,
+            'Physics_Loss': history_phys_loss,
+            'Test_Loss': history_test_loss
+        })
+        csv_path = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.csv")
+        metrics_df.to_csv(csv_path, index=False)
+        mlflow.log_artifact(csv_path)
+        
         # Generar y guardar gráfico de métricas
         plt.figure(figsize=(10, 6))
-        plt.plot(history_steps, history_data_loss, label='Data Loss', color='blue')
+        plt.plot(history_steps, history_data_loss, label='Train Data Loss', color='blue')
+        plt.plot(history_steps, history_test_loss, label='Test Loss (Hold-out)', color='green')
         plt.plot(history_steps, history_phys_loss, label='Physics Loss', color='red')
         plt.yscale('log')
         plt.title('Convergencia del Entrenamiento PINN 4D')

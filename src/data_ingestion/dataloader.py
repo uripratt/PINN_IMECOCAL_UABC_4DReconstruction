@@ -10,7 +10,9 @@ class CoastalPINNDataset(Dataset):
     Carga el dataset 'imecocal_augmented.csv' preprocesado que ya 
     fusionó de forma segura la batimetría ETOPO y las velocidades CMEMS.
     """
-    def __init__(self, augmented_csv_path=None):
+    def __init__(self, augmented_csv_path=None, split='train', test_size=0.15, random_state=42):
+        from sklearn.model_selection import train_test_split
+        
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
         self.csv_path = augmented_csv_path or os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
         
@@ -23,6 +25,19 @@ class CoastalPINNDataset(Dataset):
         
         # Eliminar cualquier NaN restante por seguridad
         self.df = self.df.dropna(subset=['Clorofila']).copy()
+        
+        # Train/Test Split
+        df_train, df_test = train_test_split(self.df, test_size=test_size, random_state=random_state)
+        
+        if split == 'train':
+            self.df = df_train
+        elif split == 'test':
+            self.df = df_test
+        else:
+            raise ValueError("El parámetro 'split' debe ser 'train' o 'test'.")
+            
+        # Ordenamos por fecha por si acaso
+        self.df = self.df.sort_values('Fecha').reset_index(drop=True)
         
         self._prepare_tensors()
         
@@ -66,9 +81,14 @@ class CoastalPINNDataset(Dataset):
         # Retornamos (X, y)
         return sample_x, sample_y
 
-def get_dataloader(batch_size=256, shuffle=True):
-    dataset = CoastalPINNDataset()
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+def get_dataloaders(batch_size=256, test_size=0.15, random_state=42):
+    train_dataset = CoastalPINNDataset(split='train', test_size=test_size, random_state=random_state)
+    test_dataset = CoastalPINNDataset(split='test', test_size=test_size, random_state=random_state)
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, test_loader
 
 if __name__ == "__main__":
     # Test rápido del Dataset
