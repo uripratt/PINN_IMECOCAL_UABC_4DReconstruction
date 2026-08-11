@@ -74,4 +74,13 @@
 2. **Ajustes Físicos (Dirichlet):** Implementar condiciones de frontera en `physics_loss.py` para anular la clorofila sobre tierra firme (batimetría > 0).
 3. **Entrenamiento Continuo Gold:** Entrenar el modelo final aplicando la rampa de Curriculum Learning (Adam -> L-BFGS) para las variables hidrodinámicas de CMEMS.
 4. **Sinergia Satelital (Hito Futuro):** Integrar datos superficiales de satélite (Ocean Color / SST) a $z=0$ en el Dataloader para anclar la superficie y usar la física de la PINN para propagar esa alta resolución hacia la columna de agua profunda de IMECOCAL.
-5. **Inferencia 4D:** Ejecutar `plot_inference.py` para materializar las visualizaciones del campo reconstruido final.
+7. **Inferencia 4D:** Ejecutar `plot_inference.py` para materializar las visualizaciones del campo reconstruido final.
+
+### Ideas de Arquitectura Avanzada (Post-Tesis)
+*   **Laplace-Beltrami Positional Encoding para PINNs Costeras:**
+    *   *Problema Actual:* La imposición de condiciones de frontera en tierra firme se realiza mediante un método de penalización suave (Dirichlet Penalty en el `Physics Loss`). Esto puede generar un ligero "sangrado" numérico hacia la costa y permite que el modelo extrapole de forma continua hacia cuencas cerradas sin datos (ej. Mar de Cortés), ya que la red neuronal opera en un dominio euclidiano plano (Lat/Lon) ciego a la topología.
+    *   *Solución Teórica (SOTA):* En lugar de coordenadas espaciales puras, se podría parametrizar el dominio espacial de la PINN utilizando una combinación lineal de las **eigenfunciones del operador de Laplace-Beltrami** calculadas sobre la variedad riemanniana del océano (usando la costa exacta y la batimetría de ETOPO como fronteras naturales).
+    *   *Ventajas Matemáticas:* 
+        1. **Hard Boundaries:** Las eigenfunciones evaluarán estrictamente a 0 en la frontera terrestre, garantizando el aislamiento absoluto sin penalizaciones suaves.
+        2. **Aislamiento Topológico:** Matemáticamente, desconectaría el Océano Pacífico del Mar de Cortés, ya que las ondas propias no pueden atravesar la discontinuidad de la península.
+    *   *Implementación Futura:* Requeriría construir una malla triangular (Delaunay) de la costa, resolver el Sparse Eigenvalue Problem, y utilizar los autovectores resultantes como un *Manifold Positional Encoding* que alimente al MLP o a una arquitectura Spectral GNN.
