@@ -26,6 +26,9 @@ class CoastalPINNDataset(Dataset):
         # Eliminar cualquier NaN restante por seguridad
         self.df = self.df.dropna(subset=['Clorofila']).copy()
         
+        # Definir t0 global antes del split para evitar desfases de tiempo entre train y test
+        self.t0 = self.df['Fecha'].min()
+        
         # SOTA: Profile Hold-out (Estrategia C - Ciegos Verticales)
         # En vez de separar filas aleatorias (lo que causa data leakage), separamos perfiles CTD completos.
         # Un perfil se define por una misma coordenada y fecha.
@@ -49,9 +52,8 @@ class CoastalPINNDataset(Dataset):
         """
         Transforma el DataFrame limpio en tensores PyTorch.
         """
-        # Convertir tiempo a un formato numérico (días desde el inicio)
-        t0 = self.df['Fecha'].min()
-        self.df['time_days'] = (self.df['Fecha'] - t0).dt.total_seconds() / (24 * 3600)
+        # Convertir tiempo a un formato numérico (días desde el inicio global t0)
+        self.df['time_days'] = (self.df['Fecha'] - self.t0).dt.total_seconds() / (24 * 3600)
         
         # Si no existen nuevas variables, inicializamos dummy
         if 'wo' not in self.df.columns: self.df['wo'] = 0.0

@@ -172,7 +172,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 
                 # --- SATELLITE LOSS (Condición de frontera z=0) ---
                 chl_sat = batch_x_full[:, 9:10].to(device)
-                mask_sat = (chl_sat > 0.01).squeeze() # Filtramos nubes/sin datos
+                mask_sat = (chl_sat > 0.01).squeeze(1) # Filtramos nubes/sin datos
                 if mask_sat.any():
                     x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
                     x_coords_sat[:, 2] = 0.0 # Forzar profundidad z=0
@@ -282,7 +282,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
                         
                         chl_sat = batch_x_full[:, 9:10].to(device)
-                        mask_sat = (chl_sat > 0.01).squeeze()
+                        mask_sat = (chl_sat > 0.01).squeeze(1)
                         if mask_sat.any():
                             x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
                             x_coords_sat[:, 2] = 0.0
@@ -305,7 +305,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         l_data = mse_loss(pred_y, batch_y).item()
                         
                         chl_sat = batch_x_full[:, 9:10].to(device)
-                        mask_sat = (chl_sat > 0.01).squeeze()
+                        mask_sat = (chl_sat > 0.01).squeeze(1)
                         if mask_sat.any():
                             x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
                             x_coords_sat[:, 2] = 0.0
