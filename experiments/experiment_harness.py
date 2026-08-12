@@ -51,15 +51,35 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     batch_times = np.random.uniform(0, max_time_days, batch_size)
     batch_depths = np.random.uniform(0, max_depth, batch_size)
     
-    # u y v son 0 en tierra
+    # u, v, y w son 0 en tierra
     batch_u = np.zeros(batch_size)
     batch_v = np.zeros(batch_size)
+    batch_w = np.zeros(batch_size)
+    batch_temp = np.full(batch_size, 15.0) # Dummy temperature (15C) until real data is ingested
     
-    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, bathy)
-    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_bathy))
+    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, w, bathy, temp)
+    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_w, batch_bathy, batch_temp))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lbfgs_epochs=0, run_name="PINN_Training"):
+def get_satellite_batch(batch_size, device, max_time_days):
+    """
+    Simula la carga de un batch de Clorofila Satelital L4 de Copernicus.
+    Obliga a la red a anclarse en la superficie (z=0).
+    (Devuelve datos simulados hasta que se integre el dataloader satelital real).
+    """
+    batch_lats = np.random.uniform(28.0, 32.0, batch_size)
+    batch_lons = np.random.uniform(-118.0, -114.0, batch_size)
+    batch_depths = np.zeros(batch_size) # CONDICIÓN CRÍTICA: Superficie (z=0)
+    batch_times = np.random.uniform(0, max_time_days, batch_size)
+    
+    X_sat = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times))
+    
+    # Clorofila satelital simulada (ej. 0.5 mg/m3)
+    y_sat = np.full((batch_size, 1), 0.5)
+    
+    return torch.tensor(X_sat, dtype=torch.float32).to(device), torch.tensor(y_sat, dtype=torch.float32).to(device)
+
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=0.5, lbfgs_epochs=0, run_name="PINN_Training"):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
@@ -101,9 +121,11 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
     
     model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=mean_x, input_std=std_x).to(device)
-    physics = CoastalPhysicsPINN(diff_coef=0.1, decay_rate=0.01)
+    # Pasamos el std_x a la física para corregir la dimensionalidad de las derivadas
+    physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
     
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # El optimizador ahora entrena tanto la red neuronal como los parámetros biológicos (Física Inversa)
+    optimizer = optim.Adam(list(model.parameters()) + list(physics.parameters()), lr=lr, weight_decay=1e-4)
     mse_loss = torch.nn.MSELoss()
     
     with mlflow.start_run(run_name=run_name):
@@ -121,14 +143,19 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         history_phys_loss = []
         history_test_loss = []
         history_steps = []
+        best_test_loss = float('inf')
+        best_model_state = None
         
         for epoch in range(epochs):
             model.train()
             epoch_data_loss = 0.0
             epoch_physics_loss = 0.0
+            epoch_sat_loss = 0.0
+            epoch_sat_loss = 0.0
+            epoch_sat_loss = 0.0
             
             # Curriculum Learning: El peso de la física aumenta gradualmente
-            lambda_phys = (epoch / curriculum_epochs) * 0.1 if epoch < curriculum_epochs else 0.1
+            lambda_phys = (epoch / curriculum_epochs) * 1.0 if epoch < curriculum_epochs else 1.0
                 
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
             for batch_x_full, batch_y in pbar:
@@ -145,8 +172,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 
                 # Desacoplar tensores físicos (sobre la unión del mar y tierra)
                 x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
-                u_velocities_phys = physics_x_full[:, 4:6]
-                bathy_phys = physics_x_full[:, 6:7]
+                u_velocities_phys = physics_x_full[:, 4:7] # u, v, w
+                bathy_phys = physics_x_full[:, 7:8]
+                temp_phys = physics_x_full[:, 8:9]
                 
                 optimizer.zero_grad()
                 
@@ -156,22 +184,29 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 loss_data = mse_loss(pred_y, batch_y)
                 
                 # --- PHYSICS LOSS (Empíricos + Tierra firme) ---
-                loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys)
+                loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
+                
+                # --- SATELLITE LOSS (Condición de frontera z=0) ---
+                x_sat, y_sat = get_satellite_batch(batch_size, device, max_time_days)
+                pred_sat = model(x_sat)
+                loss_satelite = mse_loss(pred_sat, y_sat)
                 
                 # --- TOTAL LOSS ---
-                loss_total = loss_data + lambda_phys * loss_physics
+                loss_total = loss_data + lambda_phys * loss_physics + lambda_sat * loss_satelite
                 
                 loss_total.backward()
                 optimizer.step()
                 
                 epoch_data_loss += loss_data.item()
                 epoch_physics_loss += loss_physics.item()
+                epoch_sat_loss += loss_satelite.item()
                 
-                pbar.set_postfix({"L_data": f"{loss_data.item():.4f}", "L_phys": f"{loss_physics.item():.4f}"})
+                pbar.set_postfix({"L_data": f"{loss_data.item():.4f}", "L_phys": f"{loss_physics.item():.4f}", "L_sat": f"{loss_satelite.item():.4f}"})
             
             # Promedios del epoch (Train)
             avg_data_loss = epoch_data_loss / len(train_loader)
             avg_phys_loss = epoch_physics_loss / len(train_loader)
+            avg_sat_loss = epoch_sat_loss / len(train_loader)
             
             # --- EVALUACIÓN (TEST SET) ---
             model.eval()
@@ -186,11 +221,17 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     epoch_test_loss += loss_test.item()
             avg_test_loss = epoch_test_loss / len(test_loader)
             
+            # Early Stopping Check
+            if avg_test_loss < best_test_loss:
+                best_test_loss = avg_test_loss
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            
             mlflow.log_metrics({
                 "Data_Loss": avg_data_loss,
                 "Physics_Loss": avg_phys_loss,
+                "Sat_Loss": avg_sat_loss,
                 "Test_Loss": avg_test_loss,
-                "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss,
+                "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss + lambda_sat * avg_sat_loss,
                 "lambda_phys": lambda_phys
             }, step=epoch)
             
@@ -206,7 +247,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             print(f"\nIniciando refinamiento de {lbfgs_epochs} epochs con optimizador L-BFGS...")
             
             # Usamos el peso final del curriculum
-            lambda_phys_final = 0.1 
+            lambda_phys_final = 1.0 
             
             for epoch in range(epochs, epochs + lbfgs_epochs):
                 model.train()
@@ -218,7 +259,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 for batch_x_full, batch_y in pbar:
                     # Re-inicializar L-BFGS por cada mini-batch para no arrastrar
                     # historial del Hessiano inválido de batches anteriores.
-                    optimizer_lbfgs = optim.LBFGS(model.parameters(), 
+                    optimizer_lbfgs = optim.LBFGS(list(model.parameters()) + list(physics.parameters()), 
                                                   lr=0.01, 
                                                   max_iter=20, 
                                                   tolerance_grad=1e-7, 
@@ -237,15 +278,16 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         physics_x_full = batch_x_full
                     
                     x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
-                    u_velocities_phys = physics_x_full[:, 4:6]
-                    bathy_phys = physics_x_full[:, 6:7]
+                    u_velocities_phys = physics_x_full[:, 4:7] # u, v, w
+                    bathy_phys = physics_x_full[:, 7:8]
+                    temp_phys = physics_x_full[:, 8:9]
                     x_coords_data = batch_x_full[:, 0:4].to(device)
                     
                     def closure():
                         optimizer_lbfgs.zero_grad()
                         pred_y = model(x_coords_data)
                         loss_d = mse_loss(pred_y, batch_y)
-                        loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys)
+                        loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
                         loss_t = loss_d + lambda_phys_final * loss_p
                         loss_t.backward()
                         return loss_t
@@ -292,6 +334,11 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         epoch_test_loss += loss_test.item()
                 avg_test_loss = epoch_test_loss / len(test_loader)
                 
+                # Early Stopping Check (L-BFGS)
+                if avg_test_loss < best_test_loss:
+                    best_test_loss = avg_test_loss
+                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                
                 mlflow.log_metrics({
                     "Data_Loss": avg_data_loss,
                     "Physics_Loss": avg_phys_loss,
@@ -305,7 +352,11 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 history_test_loss.append(avg_test_loss)
                 history_steps.append(epoch)
                 
-        print("Entrenamiento completado. Guardando modelo...")
+        print("Entrenamiento completado. Restaurando el mejor modelo según Test Loss...")
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+            
+        print(f"Mejor Test Loss alcanzado: {best_test_loss:.4f}")
         model_path = os.path.join(os.path.dirname(__file__), f"pinn_model_{run_name}.pth")
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
@@ -350,4 +401,4 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
 if __name__ == "__main__":
     # Entrenamiento Completo en Servidor (Fase Gold)
     # Incluye fase Adam + fase L-BFGS
-    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=4, lbfgs_epochs=500)
+    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=20, lbfgs_epochs=500)

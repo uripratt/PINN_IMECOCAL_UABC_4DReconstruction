@@ -1,84 +1,90 @@
 import torch
+import torch.nn as nn
 
-class CoastalPhysicsPINN:
+class CoastalPhysicsPINN(nn.Module):
     """
-    Agente 2 (Physical Modeler): Operadores de Física para la Red Neuronal.
-    
-    Este módulo implementa el cálculo de las Ecuaciones en Derivadas Parciales (PDEs)
-    que gobiernan la dinámica oceánica. Para la clorofila, utilizamos la ecuación 
-    de Advección-Difusión-Reacción.
+    Agente 4 (Physics Validator): Representa las leyes físicas y biogeoquímicas
+    que gobiernan la dinámica oceánica.
     """
-    def __init__(self, diff_coef=0.1, decay_rate=0.01):
-        # Coeficiente de difusión Turbulenta (K) y tasa de mortalidad/hundimiento (R)
+    def __init__(self, diff_coef=0.1, std_x=None):
+        super().__init__()
+        # Coeficiente de difusión Turbulenta (K) (Fijo por ahora)
         self.K = diff_coef
-        self.R = decay_rate
+        self.std_x = std_x if std_x is not None else torch.ones(4)
+        
+        # --- PARÁMETROS BIOLÓGICOS ENTRENABLES (Física Inversa) ---
+        # La red descubrirá estos valores durante el entrenamiento
+        self.mu_max = nn.Parameter(torch.tensor([0.5]))  # Tasa máxima de crecimiento (1/día)
+        self.k_e = nn.Parameter(torch.tensor([0.05]))    # Coef. atenuación luz (1/m)
+        self.m = nn.Parameter(torch.tensor([0.1]))       # Tasa de mortalidad (1/día)
 
-    def compute_physics_loss(self, model, X, u_velocities, bathymetry=None):
+    def compute_physics_loss(self, model, X, u_velocities, temperature, bathymetry=None):
         """
         Calcula el residuo de la Ecuación Diferencial (Physics Loss) usando autograd.
         
         Parámetros:
         - model: La red neuronal (PINN) que predice la Clorofila.
         - X: Tensor de entrada [N, 4] -> (lat, lon, depth, time)
-        - u_velocities: Tensor de velocidades [N, 2] -> (u, v) provistas por CMEMS
+        - u_velocities: Tensor de velocidades [N, 3] -> (u, v, w)
+        - temperature: Tensor de temperatura [N, 1]
         - bathymetry: Tensor de batimetría [N, 1] -> elevación (valores > 0 indican tierra)
         """
-        # Es fundamental que las entradas tengan 'requires_grad=True' 
-        # para que PyTorch pueda calcular las derivadas parciales.
         if not X.requires_grad:
             X.requires_grad_(True)
             
-        # Predicción de la concentración de Clorofila (C) en las coordenadas X
         C = model(X)
         
-        # 1. Primeras Derivadas Espaciales y Temporales
-        # dC_dX contiene: dC/dLat, dC/dLon, dC/dDepth, dC/dTime
         dC_dX = torch.autograd.grad(
             C, X, grad_outputs=torch.ones_like(C),
             create_graph=True, retain_graph=True
         )[0]
         
-        dC_dlat   = dC_dX[:, 0:1]
-        dC_dlon   = dC_dX[:, 1:2]
-        dC_ddepth = dC_dX[:, 2:3]
-        dC_dtime  = dC_dX[:, 3:4]
+        dC_dlat   = dC_dX[:, 0:1] / self.std_x[0]
+        dC_dlon   = dC_dX[:, 1:2] / self.std_x[1]
+        dC_ddepth = dC_dX[:, 2:3] / self.std_x[2]
+        dC_dtime  = dC_dX[:, 3:4] / self.std_x[3]
         
-        # 2. Segundas Derivadas Espaciales (para la Difusión)
         d2C_dlat2 = torch.autograd.grad(
-            dC_dlat, X, grad_outputs=torch.ones_like(dC_dlat),
+            dC_dX[:, 0:1], X, grad_outputs=torch.ones_like(dC_dX[:, 0:1]),
             create_graph=True, retain_graph=True
-        )[0][:, 0:1]
+        )[0][:, 0:1] / (self.std_x[0] ** 2)
         
         d2C_dlon2 = torch.autograd.grad(
-            dC_dlon, X, grad_outputs=torch.ones_like(dC_dlon),
+            dC_dX[:, 1:2], X, grad_outputs=torch.ones_like(dC_dX[:, 1:2]),
             create_graph=True, retain_graph=True
-        )[0][:, 1:2]
+        )[0][:, 1:2] / (self.std_x[1] ** 2)
         
-        # 3. Término de Advección (transporte por corrientes CMEMS)
-        u = u_velocities[:, 0:1] # Zonal
-        v = u_velocities[:, 1:2] # Meridional
+        sec_per_day = 86400.0
+        m_per_degree = 111139.0
         
-        advection = u * dC_dlon + v * dC_dlat
+        u = u_velocities[:, 0:1] * sec_per_day / m_per_degree
+        v = u_velocities[:, 1:2] * sec_per_day / m_per_degree
+        w = u_velocities[:, 2:3] * sec_per_day
         
-        # 4. Término de Difusión
-        diffusion = self.K * (d2C_dlon2 + d2C_dlat2)
+        advection = u * dC_dlon + v * dC_dlat + w * dC_ddepth
         
-        # 5. Ecuación de Reacción-Transporte (Residuo PDE)
-        # dC/dt + u*grad(C) = K*laplaciano(C) - R*C
-        pde_residual = dC_dtime + advection - diffusion + self.R * C
+        K_deg_day = self.K * sec_per_day / (m_per_degree ** 2)
+        diffusion = K_deg_day * (d2C_dlon2 + d2C_dlat2)
         
-        # --- CONDICIÓN DE FRONTERA DIRICHLET (TIERRA FIRME) ---
-        # Si la elevación es > 0 (tierra), forzamos a que la clorofila tienda a 0.
+        # 5. Ecuación de Reacción-Transporte Biogeoquímico
+        z_phys = X[:, 2:3] * self.std_x[2]
+        
+        f_light = torch.exp(-torch.abs(self.k_e) * z_phys)
+        
+        T_max = 25.0
+        T_min = 10.0
+        f_nutrients = torch.clamp((T_max - temperature) / (T_max - T_min), 0.0, 1.0)
+        
+        growth = torch.abs(self.mu_max) * f_light * f_nutrients * C
+        mortality = torch.abs(self.m) * C
+        
+        pde_residual = dC_dtime + advection - diffusion - growth + mortality
+        
+        # --- MÁSCARA DE TIERRA ---
         if bathymetry is not None:
-            land_mask = (bathymetry > 0).float()
-            ocean_mask = (bathymetry <= 0).float()
+            land_mask = (bathymetry <= 0).float()
+            pde_residual = pde_residual * land_mask
             
-            # Penalización severa si predice clorofila en el continente
-            dirichlet_loss = torch.mean(land_mask * (C ** 2))
-            
-            # La pérdida física solo se aplica al océano
-            loss_physics = torch.mean(ocean_mask * (pde_residual ** 2)) + dirichlet_loss
-        else:
-            loss_physics = torch.mean(pde_residual ** 2)
+        physics_loss = torch.mean(pde_residual ** 2)
         
-        return loss_physics
+        return physics_loss

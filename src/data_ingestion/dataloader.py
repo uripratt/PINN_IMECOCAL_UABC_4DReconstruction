@@ -49,7 +49,11 @@ class CoastalPINNDataset(Dataset):
         t0 = self.df['Fecha'].min()
         self.df['time_days'] = (self.df['Fecha'] - t0).dt.total_seconds() / (24 * 3600)
         
-        # X: (Lat, Lon, Depth, Time_days, u, v, bathy)
+        # Si no existe 'wo' (upwelling), la inicializamos a 0 para que la red soporte la Advección 3D
+        if 'wo' not in self.df.columns:
+            self.df['wo'] = 0.0
+            
+        # X: (Lat, Lon, Depth, Time_days, u, v, w, bathy)
         X_numpy = np.column_stack((
             self.df['Latitud'].values,
             self.df['Longitud'].values,
@@ -57,6 +61,7 @@ class CoastalPINNDataset(Dataset):
             self.df['time_days'].values,
             self.df['uo'].fillna(0.0).values,
             self.df['vo'].fillna(0.0).values,
+            self.df['wo'].fillna(0.0).values,
             self.df['bathy'].fillna(0.0).values
         ))
         
@@ -98,5 +103,5 @@ if __name__ == "__main__":
     if len(ds) > 0:
         x_sample, y_sample = ds[0]
         print("\nEjemplo de Muestra 0:")
-        print(f"  Inputs (Lat, Lon, Prof, Tiempo_Dias, u, v, bathy): {x_sample}")
+        print(f"  Inputs (Lat, Lon, Prof, Tiempo_Dias, u, v, w, bathy): {x_sample}")
         print(f"  Target (Clorofila): {y_sample}")
