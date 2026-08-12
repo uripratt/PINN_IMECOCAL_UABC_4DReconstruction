@@ -7,8 +7,10 @@ def download_in_batches():
     lat_min, lat_max = 23.83, 32.75
     
     # Directorios de salida
+    currents_dir = "data/raw/cmems_yearly"
     thetao_dir = "data/raw/cmems_yearly_thetao"
     chl_dir = "data/raw/satellite_chl_yearly"
+    os.makedirs(currents_dir, exist_ok=True)
     os.makedirs(thetao_dir, exist_ok=True)
     os.makedirs(chl_dir, exist_ok=True)
 
@@ -17,6 +19,24 @@ def download_in_batches():
     for year in range(1998, 2013):
         start_date = f"{year}-01-01"
         end_date = f"{year}-12-31"
+        
+        currents_file = os.path.join(currents_dir, f"cmems_currents_{year}.nc")
+        if os.path.exists(currents_file) and os.path.getsize(currents_file) > 1000000:
+            print(f"[{year}] Corrientes ya existen, saltando...")
+        else:
+            print(f"\n--- Descargando Corrientes (uo, vo) para {year} ---")
+            currents_cmd = [
+                "copernicusmarine", "subset",
+                "-i", "cmems_mod_glo_phy_my_0.083deg_P1D-m",
+                "-x", str(lon_min), "-X", str(lon_max),
+                "-y", str(lat_min), "-Y", str(lat_max),
+                "-t", start_date, "-T", end_date,
+                "-v", "uo", "-v", "vo",
+                "--output-directory", currents_dir,
+                "--output-filename", f"cmems_currents_{year}.nc",
+                "--force-download"
+            ]
+            subprocess.run(currents_cmd)
         
         thetao_file = os.path.join(thetao_dir, f"cmems_thetao_{year}.nc")
         if os.path.exists(thetao_file) and os.path.getsize(thetao_file) > 1000000:
