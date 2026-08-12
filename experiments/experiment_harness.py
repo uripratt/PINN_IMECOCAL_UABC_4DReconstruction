@@ -292,7 +292,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         pred_y = model(x_coords_data)
                         l_data = mse_loss(pred_y, batch_y).item()
                     with torch.enable_grad():
-                        l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, bathymetry=bathy_phys).item()
+                        l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys).item()
                         
                     if np.isnan(l_data) or np.isnan(l_phys):
                         print("\n[Advertencia] NaN detectado en L-BFGS. Revirtiendo pesos y cancelando L-BFGS para esta run.")
