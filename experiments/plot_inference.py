@@ -3,7 +3,14 @@ import sys
 import numpy as np
 import torch
 import xarray as xr
-import pygmt
+
+try:
+    import pygmt
+    HAS_PYGMT = True
+except ImportError:
+    HAS_PYGMT = False
+except OSError:
+    HAS_PYGMT = False
 
 # Asegurar que se puede importar src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -47,48 +54,62 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     with torch.no_grad():
         preds = model(X_tensor).cpu().numpy()
         
-    # Reconstruir el campo 2D y convertirlo en xarray (requisito de PyGMT)
+    # Reconstruir el campo 2D
     C_pred = preds.reshape(resolution, resolution)
-    da_pred = xr.DataArray(C_pred, coords=[lats, lons], dims=["lat", "lon"])
     
-    print("Generando mapa de calor oceanográfico con PyGMT...")
-    fig = pygmt.Figure()
-    region = [lon_range[0], lon_range[1], lat_range[0], lat_range[1]]
-    
-    # Título y marcos
-    title = f"Reconstruccion 4D PINN - Profundidad: {int(depth)}m, Dia: {int(time_day)}"
-    fig.basemap(region=region, projection="M12c", frame=[f'WSne+t"{title}"', "xaf", "yaf"])
-    
-    # Mapear las predicciones del modelo PINN
-    pygmt.makecpt(cmap="viridis", series=[float(C_pred.min()), float(C_pred.max())])
-    fig.grdimage(grid=da_pred, cmap=True)
-    
-    # Superponer Topografía y Batimetría
-    bathy_file = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc'))
-    if os.path.exists(bathy_file):
-        ds_bathy = xr.open_dataset(bathy_file)
-        var_name = 'altitude' if 'altitude' in ds_bathy else 'elevation'
-        
-        # Isobatas batimétricas (transparentes blancas)
-        fig.grdcontour(
-            grid=ds_bathy[var_name], 
-            levels=[-4000, -3000, -2000, -1000, -500, -200, -50], 
-            pen="0.6p,white,dashed"
-        )
-        ds_bathy.close()
-        
-    # Añadir línea de costa y enmascarar tierra para tapar las predicciones del modelo sobre la tierra
-    fig.coast(land="dimgray", shorelines="1.5p,black", borders="1/0.8p,black")
-    
-    # Barra de colores
-    fig.colorbar(frame=['x+l"Clorofila-a predicha (mg/m@+3@+)"'], position="JMR+o0.5c/0c+w8c/0.5c")
-    
-    # Guardar mapa
     prefix = f"{run_name}_" if run_name else ""
     out_file = os.path.join(os.path.dirname(__file__), f"{prefix}pinn_inference_z{int(depth)}_t{int(time_day)}.png")
-    fig.savefig(out_file, dpi=300)
     
-    print(f"✅ Inferencia completada. Mapa de alta resolución guardado en: {out_file}")
+    if HAS_PYGMT:
+        print("Generando mapa de calor oceanográfico con PyGMT...")
+        da_pred = xr.DataArray(C_pred, coords=[lats, lons], dims=["lat", "lon"])
+        fig = pygmt.Figure()
+        region = [lon_range[0], lon_range[1], lat_range[0], lat_range[1]]
+        
+        title = f"Reconstruccion 4D PINN - Profundidad: {int(depth)}m, Dia: {int(time_day)}"
+        fig.basemap(region=region, projection="M12c", frame=[f'WSne+t"{title}"', "xaf", "yaf"])
+        
+        pygmt.makecpt(cmap="viridis", series=[float(C_pred.min()), float(C_pred.max())])
+        fig.grdimage(grid=da_pred, cmap=True)
+        
+        bathy_file = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc'))
+        if os.path.exists(bathy_file):
+            ds_bathy = xr.open_dataset(bathy_file)
+            var_name = 'altitude' if 'altitude' in ds_bathy else 'elevation'
+            fig.grdcontour(
+                grid=ds_bathy[var_name], 
+                levels=[-4000, -3000, -2000, -1000, -500, -200, -50], 
+                pen="0.6p,white,dashed"
+            )
+            ds_bathy.close()
+            
+        fig.coast(land="dimgray", shorelines="1.5p,black", borders="1/0.8p,black")
+        fig.colorbar(frame=['x+l"Clorofila-a predicha (mg/m@+3@+)"'], position="JMR+o0.5c/0c+w8c/0.5c")
+        fig.savefig(out_file, dpi=300)
+    else:
+        print("PyGMT no disponible. Generando mapa de calor con Matplotlib puro (Fallback)...")
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(10, 8))
+        contour = plt.contourf(Lon, Lat, C_pred, levels=60, cmap='viridis')
+        plt.colorbar(contour, label='Clorofila-$a$ predicha (mg/m³)')
+        
+        bathy_file = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc'))
+        if os.path.exists(bathy_file):
+            ds_bathy = xr.open_dataset(bathy_file)
+            var_name = 'altitude' if 'altitude' in ds_bathy else 'elevation'
+            plt.contour(ds_bathy.longitude, ds_bathy.latitude, ds_bathy[var_name], 
+                        levels=[-4000, -2000, -500, -50], colors='white', alpha=0.3)
+            plt.contourf(ds_bathy.longitude, ds_bathy.latitude, ds_bathy[var_name], 
+                         levels=[0, 10000], colors=['dimgray'])
+            ds_bathy.close()
+            
+        plt.title(f'Reconstruccion 4D PINN - Prof: {depth}m, Dia: {int(time_day)}')
+        plt.xlabel('Longitud')
+        plt.ylabel('Latitud')
+        plt.savefig(out_file, dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    print(f"✅ Inferencia completada. Mapa guardado en: {out_file}")
     return out_file
 
 if __name__ == "__main__":
