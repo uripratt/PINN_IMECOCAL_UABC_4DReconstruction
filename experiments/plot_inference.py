@@ -7,9 +7,8 @@ import xarray as xr
 try:
     import pygmt
     HAS_PYGMT = True
-except ImportError:
-    HAS_PYGMT = False
-except OSError:
+except Exception as e:
+    print(f"[Aviso] No se pudo cargar PyGMT ({e}). Se usará Matplotlib como fallback.")
     HAS_PYGMT = False
 
 # Asegurar que se puede importar src
