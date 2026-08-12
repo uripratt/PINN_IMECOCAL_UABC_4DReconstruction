@@ -2,27 +2,24 @@ import os
 import sys
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 import xarray as xr
+import pygmt
 
 # Asegurar que se puede importar src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.models.pinn_model import CoastalPINNModel
 
 def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=100.0, resolution=200, run_name=""):
     """
     Genera predicciones en una malla 2D espaciotemporal continua utilizando la PINN entrenada,
-    y visualiza el resultado para evaluar la reconstrucción física (mesh-free).
+    y visualiza el resultado para evaluar la reconstrucción física utilizando PyGMT (SOTA Mapping).
     """
     print("Cargando arquitectura PINN...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     # Cargar los pesos entrenados
     state_dict = torch.load(model_path, map_location=device)
     
-    # Extraer parámetros de normalización si existen en el modelo guardado
     if 'input_mean' in state_dict and 'input_std' in state_dict:
         input_mean = state_dict['input_mean'].cpu().numpy()
         input_std = state_dict['input_std'].cpu().numpy()
@@ -33,19 +30,16 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     model.load_state_dict(state_dict)
     model.eval()
 
-    # 1. Generar malla espacial densa (Resolution x Resolution)
     print(f"Generando malla de interpolación de {resolution}x{resolution} píxeles...")
     lats = np.linspace(lat_range[0], lat_range[1], resolution)
     lons = np.linspace(lon_range[0], lon_range[1], resolution)
     Lon, Lat = np.meshgrid(lons, lats)
     
-    # 2. Aplanar tensores para alimentar la MLP
     flat_lats = Lat.flatten()
     flat_lons = Lon.flatten()
     flat_depth = np.full_like(flat_lats, depth)
     flat_time = np.full_like(flat_lats, time_day)
     
-    # Tensor de entrada: (Lat, Lon, Profundidad, Tiempo)
     X_infer = np.column_stack((flat_lats, flat_lons, flat_depth, flat_time))
     X_tensor = torch.tensor(X_infer, dtype=torch.float32).to(device)
     
@@ -53,58 +47,52 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     with torch.no_grad():
         preds = model(X_tensor).cpu().numpy()
         
-    # Reconstruir el campo 2D
+    # Reconstruir el campo 2D y convertirlo en xarray (requisito de PyGMT)
     C_pred = preds.reshape(resolution, resolution)
+    da_pred = xr.DataArray(C_pred, coords=[lats, lons], dims=["lat", "lon"])
     
-    # 3. Visualización Oceanográfica
-    print("Generando mapa de calor oceanográfico con batimetría y topografía...")
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+    print("Generando mapa de calor oceanográfico con PyGMT...")
+    fig = pygmt.Figure()
+    region = [lon_range[0], lon_range[1], lat_range[0], lat_range[1]]
     
-    # Utilizamos contourf para visualizar las transiciones fluidas de las PDEs
-    contour = ax.contourf(Lon, Lat, C_pred, levels=60, cmap='viridis', transform=ccrs.PlateCarree(), alpha=0.85)
-    cbar = plt.colorbar(contour, ax=ax, label='Clorofila-$a$ predicha (mg/m³)', shrink=0.8)
+    # Título y marcos
+    title = f"Reconstruccion 4D PINN - Profundidad: {int(depth)}m, Dia: {int(time_day)}"
+    fig.basemap(region=region, projection="M12c", frame=[f'WSne+t"{title}"', "xaf", "yaf"])
+    
+    # Mapear las predicciones del modelo PINN
+    pygmt.makecpt(cmap="viridis", series=[float(C_pred.min()), float(C_pred.max())])
+    fig.grdimage(grid=da_pred, cmap=True)
     
     # Superponer Topografía y Batimetría
     bathy_file = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc'))
     if os.path.exists(bathy_file):
         ds_bathy = xr.open_dataset(bathy_file)
         var_name = 'altitude' if 'altitude' in ds_bathy else 'elevation'
-        lons_b = ds_bathy.longitude.values
-        lats_b = ds_bathy.latitude.values
-        elev = ds_bathy[var_name].values
         
-        # Batimetría en curvas de nivel (transparentes)
-        ax.contour(lons_b, lats_b, elev, levels=[-4000, -3000, -2000, -1000, -500, -200, -50], colors='white', linewidths=0.6, alpha=0.4, transform=ccrs.PlateCarree())
-        
-        # Topografía (Tierra firme) con transparencia
-        ax.contourf(lons_b, lats_b, elev, levels=[0, 10000], colors=['dimgray'], alpha=0.6, transform=ccrs.PlateCarree())
+        # Isobatas batimétricas (transparentes blancas)
+        fig.grdcontour(
+            grid=ds_bathy[var_name], 
+            levels=[-4000, -3000, -2000, -1000, -500, -200, -50], 
+            pen="0.6p,white,dashed"
+        )
         ds_bathy.close()
-
-    ax.add_feature(cfeature.COASTLINE, linewidth=1.5, edgecolor='black')
-    ax.add_feature(cfeature.BORDERS, linewidth=0.8, edgecolor='black', linestyle=':')
+        
+    # Añadir línea de costa y enmascarar tierra para tapar las predicciones del modelo sobre la tierra
+    fig.coast(land="dimgray", shorelines="1.5p,black", borders="1/0.8p,black")
     
-    gl = ax.gridlines(draw_labels=True, linestyle='--', alpha=0.5, color='gray')
-    gl.top_labels = False
-    gl.right_labels = False
+    # Barra de colores
+    fig.colorbar(frame=['x+l"Clorofila-a predicha (mg/m@+3@+)"'], position="JMR+o0.5c/0c+w8c/0.5c")
     
-    plt.title(f'Reconstrucción 4D - Campo Continuo de Clorofila-a (PINN)\\nProfundidad: {depth} m | Día Simulado: {int(time_day)}', fontsize=14, pad=15)
-    
-    # Guardar en alta calidad
+    # Guardar mapa
     prefix = f"{run_name}_" if run_name else ""
     out_file = os.path.join(os.path.dirname(__file__), f"{prefix}pinn_inference_z{int(depth)}_t{int(time_day)}.png")
-    plt.savefig(out_file, dpi=300, bbox_inches='tight')
-    plt.close()
+    fig.savefig(out_file, dpi=300)
     
     print(f"✅ Inferencia completada. Mapa de alta resolución guardado en: {out_file}")
     return out_file
 
 if __name__ == "__main__":
-    # Dominio de Baja California (IMECOCAL + CMEMS Subset)
     lat_bnds = [23.82, 32.75]
     lon_bnds = [-119.85, -111.92]
-    
     model_pth = os.path.join(os.path.dirname(__file__), "pinn_model_final.pth")
-    
-    # Demostración: Reconstruir la superficie del océano (0m) en el día 100 del dataset
     plot_continuous_field(model_pth, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=250)
