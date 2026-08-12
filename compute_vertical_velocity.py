@@ -12,8 +12,11 @@ def compute_w_day(ds_day):
     du_dx = ds_day.uo.differentiate('longitude') / dx.mean().values
     dv_dy = ds_day.vo.differentiate('latitude') / dy.mean().values
     
-    div_h = du_dx + dv_dy
+    # Rellenar NaNs de tierra/fondo con 0 para que la integración no se corrompa
+    div_h = (du_dx + dv_dy).fillna(0.0)
+    
     dz = ds_day.depth.diff('depth').fillna(1.0)
+    # Integración desde el fondo hacia la superficie
     w = - (div_h * dz).isel(depth=slice(None, None, -1)).cumsum('depth').isel(depth=slice(None, None, -1))
     return w.rename('wo')
 
