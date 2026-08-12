@@ -124,6 +124,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         
         history_data_loss = []
         history_phys_loss = []
+        history_sat_loss = []
         history_test_loss = []
         history_steps = []
         best_test_loss = float('inf')
@@ -226,6 +227,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             
             history_data_loss.append(avg_data_loss)
             history_phys_loss.append(avg_phys_loss)
+            history_sat_loss.append(avg_sat_loss)
             history_test_loss.append(avg_test_loss)
             history_steps.append(epoch)
             
@@ -242,6 +244,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 model.train()
                 epoch_data_loss = 0.0
                 epoch_physics_loss = 0.0
+                epoch_sat_loss = 0.0
                 
                 pbar = tqdm(train_loader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
                 nan_detected = False
@@ -277,7 +280,17 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         pred_y = model(x_coords_data)
                         loss_d = mse_loss(pred_y, batch_y)
                         loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
-                        loss_t = loss_d + lambda_phys_final * loss_p
+                        
+                        chl_sat = batch_x_full[:, 9:10].to(device)
+                        mask_sat = (chl_sat > 0.01).squeeze()
+                        if mask_sat.any():
+                            x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
+                            x_coords_sat[:, 2] = 0.0
+                            loss_s = mse_loss(model(x_coords_sat), chl_sat[mask_sat])
+                        else:
+                            loss_s = torch.tensor(0.0, device=device)
+                            
+                        loss_t = loss_d + lambda_phys_final * loss_p + lambda_sat * loss_s
                         loss_t.backward()
                         return loss_t
                     
@@ -287,10 +300,19 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     # L-BFGS ejecuta el closure múltiples veces internamente
                     optimizer_lbfgs.step(closure)
                     
-                    # Recalculamos loss para logging sin afectar los gradientes
                     with torch.no_grad():
                         pred_y = model(x_coords_data)
                         l_data = mse_loss(pred_y, batch_y).item()
+                        
+                        chl_sat = batch_x_full[:, 9:10].to(device)
+                        mask_sat = (chl_sat > 0.01).squeeze()
+                        if mask_sat.any():
+                            x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
+                            x_coords_sat[:, 2] = 0.0
+                            l_sat = mse_loss(model(x_coords_sat), chl_sat[mask_sat]).item()
+                        else:
+                            l_sat = 0.0
+                            
                     with torch.enable_grad():
                         l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys).item()
                         
@@ -302,13 +324,15 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         
                     epoch_data_loss += l_data
                     epoch_physics_loss += l_phys
-                    pbar.set_postfix({"L_data": f"{l_data:.4f}", "L_phys": f"{l_phys:.4f}"})
+                    epoch_sat_loss += l_sat
+                    pbar.set_postfix({"L_data": f"{l_data:.4f}", "L_phys": f"{l_phys:.4f}", "L_sat": f"{l_sat:.4f}"})
                 
                 if nan_detected:
                     break
                 
                 avg_data_loss = epoch_data_loss / len(train_loader)
                 avg_phys_loss = epoch_physics_loss / len(train_loader)
+                avg_sat_loss = epoch_sat_loss / len(train_loader)
                 
                 # --- EVALUACIÓN (TEST SET) L-BFGS ---
                 model.eval()
@@ -331,13 +355,15 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 mlflow.log_metrics({
                     "Data_Loss": avg_data_loss,
                     "Physics_Loss": avg_phys_loss,
+                    "Sat_Loss": avg_sat_loss,
                     "Test_Loss": avg_test_loss,
-                    "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss,
+                    "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss + lambda_sat * avg_sat_loss,
                     "lambda_phys": lambda_phys_final
                 }, step=epoch)
                 
                 history_data_loss.append(avg_data_loss)
                 history_phys_loss.append(avg_phys_loss)
+                history_sat_loss.append(avg_sat_loss)
                 history_test_loss.append(avg_test_loss)
                 history_steps.append(epoch)
                 
@@ -356,6 +382,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             'Epoch': history_steps,
             'Data_Loss': history_data_loss,
             'Physics_Loss': history_phys_loss,
+            'Sat_Loss': history_sat_loss,
             'Test_Loss': history_test_loss
         })
         csv_path = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.csv")
