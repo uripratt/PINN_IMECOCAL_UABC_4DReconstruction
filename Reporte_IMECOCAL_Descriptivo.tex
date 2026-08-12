@@ -151,12 +151,18 @@ Para operacionalizar la formulación física descrita anteriormente, se diseñó
 \end{figure}
 
 \subsection{Integración de Datos y Covariables Físicas}
-El modelo no opera de forma aislada sobre los perfiles de clorofila. Para que la ecuación de advección-difusión posea significado físico, es mandatorio inyectar campos continuos de forzamiento hidrográfico. La ingesta de datos se estructura en tres componentes clave:
+El modelo no opera de forma aislada sobre los perfiles biológicos. Para que la ecuación de advección-difusión posea significado cinemático y termodinámico, es mandatorio inyectar campos continuos de forzamiento hidrográfico. La ingesta de datos acopla fuentes heterogéneas de distinta naturaleza (in-situ, reanálisis numérico y observaciones satelitales) que han sido previamente interpoladas a las coordenadas y fechas exactas de nuestro dominio:
+
 \begin{itemize}
-    \item \textbf{Observaciones Empíricas (Train/Test Split):} Los lances del IMECOCAL son preprocesados mediante \texttt{scikit-learn} separándolos en un 85\% de entrenamiento y un 15\% estricto de \textit{Hold-out Validation} para certificar la generalización en coordenadas no vistas.
-    \item \textbf{Dinámica Oceánica y Termodinámica (CMEMS GLORYS12V1):} Proporciona los tensores tridimensionales de velocidad de corrientes $(u, v)$, el afloramiento vertical $w_0$ y el campo tridimensional de \textbf{Temperatura ($T$)}, vital para la parametrización de nutrientes.
-    \item \textbf{Anclaje Superficial Satelital:} Durante el batcheo, se inyectan coordenadas puramente superficiales ($z=0$) simulando forzamientos de clorofila satelital (MODIS), empujando al modelo a fijar su superficie independientemente de los perfiles profundos.
+    \item \textbf{Observaciones In-Situ (IMECOCAL):} Constituyen la variable objetivo a predecir (Clorofila-$a$) y el terreno de la verdad (Ground Truth). Son datos puramente empíricos, recolectados físicamente mediante botellas Niskin y perfiladores CTD. Su naturaleza geométrica es \textit{mesh-free} (sin malla fija), siendo espacialmente irregulares y temporalmente muy dispersos (muestreos trimestrales). Para evitar fugas de datos (Data Leakage) y certificar la validación científica, estos lances se dividen rígidamente en un 85\% de entrenamiento y un 15\% de prueba oculta (Hold-out).
+    
+    \item \textbf{Reanálisis Oceanográfico (CMEMS GLORYS12V1):} Proporciona la dinámica y termodinámica del fluido subyacente. GLORYS12V1 es un producto de reanálisis global que asimila observaciones satelitales e in-situ en el modelo físico físico NEMO. De este producto se extraen los tensores tridimensionales de las velocidades horizontales $(u, v)$, el afloramiento vertical ($w_0$) y la Temperatura ($T$). Posee una resolución espacial de alta fidelidad de $1/12^\circ$ (aprox. 8 km) y una resolución temporal diaria (Daily Mean), dotando al modelo PINN del campo continuo necesario para aplicar la Ecuación de Advección.
+    
+    \item \textbf{Modelo Topográfico Estático (NOAA ETOPO1):} Modelo global de elevación que provee la batimetría del lecho marino y la orografía terrestre con una resolución espacial de 1 minuto de arco (aprox. 1.8 km). Es un campo estático independiente del tiempo, utilizado para imponer las restricciones espaciales de la costa (máscara de tierra).
+    
+    \item \textbf{Observaciones Satelitales (Nivel 4 / Superficie):} Datos continuos bidimensionales correspondientes a imágenes satelitales de Color del Océano (ej. MODIS). Estos datos, que poseen resoluciones de entre 1 km y 4 km diarios, se inyectan dinámicamente durante el batcheo en la coordenada de profundidad cero ($z=0$) para anclar la condición de frontera superior de biomasa fitoplanctónica, forzando a la red a propagar la física hacia las profundidades ciegas.
 \end{itemize}
+
 \textbf{Normalización Z-score In-Graph:} Para prevenir el colapso del gradiente en la red neuronal provocado por la extrema disparidad de escalas espaciotemporales (ej. variable tiempo $\sim 5000$ días frente a las velocidades de corrientes $\sim 0.1$ m/s), se implementó una capa de estandarización incrustada estructuralmente en el grafo de PyTorch. Esto permite que \texttt{autograd} aplique la regla de la cadena de las derivadas parciales de forma matemáticamente perfecta: $\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \cdot \sigma_X^{-1}$.
 
 \subsection{Diseño de la Red Neuronal (MLP)}
