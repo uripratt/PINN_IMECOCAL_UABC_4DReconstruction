@@ -84,3 +84,8 @@
         1. **Hard Boundaries:** Las eigenfunciones evaluarán estrictamente a 0 en la frontera terrestre, garantizando el aislamiento absoluto sin penalizaciones suaves.
         2. **Aislamiento Topológico:** Matemáticamente, desconectaría el Océano Pacífico del Mar de Cortés, ya que las ondas propias no pueden atravesar la discontinuidad de la península.
     *   *Implementación Futura:* Requeriría construir una malla triangular (Delaunay) de la costa, resolver el Sparse Eigenvalue Problem, y utilizar los autovectores resultantes como un *Manifold Positional Encoding* que alimente al MLP o a una arquitectura Spectral GNN.
+
+### Actualización de Cierre de Jornada (11 de Agosto, 2026)
+*   **Sincronización Científica SOTA:** Se reescribió de manera exhaustiva el `Reporte_IMECOCAL_Descriptivo.tex` (Específicamente la Sección 6 Metodológica) para reflejar que la implementación en Python ya ha alcanzado hitos críticos del Estado del Arte que antes se consideraban "pendientes".
+*   **Física Inversa Operativa:** Se ha documentado formalmente que el `physics_loss.py` no usa decaimiento pasivo, sino que opera con PyTorch Autograd como un modelo de **Física Inversa**. La red descubre en tiempo real los tensores biomatemáticos: tasa de crecimiento ($\mu_{max}$), coeficiente de extinción ($k_e$) y mortalidad ($m$), además de usar un limitador de nutrientes basado en el campo de Temperatura ($T$) de CMEMS.
+*   **Forzamiento Satelital & Hold-out:** El reporte refleja la estabilización del arnés de experimentación, el forzamiento de batcheo satelital superficial simulado ($z=0$), la estrategia estricta de particionamiento científico `scikit-learn (85/15)`, y la persistencia Anti-NaN (L-BFGS Rollback). Todo esto ya respaldado en GitHub.
