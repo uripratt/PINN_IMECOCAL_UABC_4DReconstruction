@@ -26,13 +26,17 @@ class CoastalPINNDataset(Dataset):
         # Eliminar cualquier NaN restante por seguridad
         self.df = self.df.dropna(subset=['Clorofila']).copy()
         
-        # Train/Test Split
-        df_train, df_test = train_test_split(self.df, test_size=test_size, random_state=random_state)
+        # SOTA: Profile Hold-out (Estrategia C - Ciegos Verticales)
+        # En vez de separar filas aleatorias (lo que causa data leakage), separamos perfiles CTD completos.
+        # Un perfil se define por una misma coordenada y fecha.
+        profiles = self.df[['Latitud', 'Longitud', 'Fecha']].drop_duplicates()
+        
+        train_profiles, test_profiles = train_test_split(profiles, test_size=test_size, random_state=random_state)
         
         if split == 'train':
-            self.df = df_train
+            self.df = self.df.merge(train_profiles, on=['Latitud', 'Longitud', 'Fecha'])
         elif split == 'test':
-            self.df = df_test
+            self.df = self.df.merge(test_profiles, on=['Latitud', 'Longitud', 'Fecha'])
         else:
             raise ValueError("El parámetro 'split' debe ser 'train' o 'test'.")
             
@@ -49,11 +53,12 @@ class CoastalPINNDataset(Dataset):
         t0 = self.df['Fecha'].min()
         self.df['time_days'] = (self.df['Fecha'] - t0).dt.total_seconds() / (24 * 3600)
         
-        # Si no existe 'wo' (upwelling), la inicializamos a 0 para que la red soporte la Advección 3D
-        if 'wo' not in self.df.columns:
-            self.df['wo'] = 0.0
+        # Si no existen nuevas variables, inicializamos dummy
+        if 'wo' not in self.df.columns: self.df['wo'] = 0.0
+        if 'thetao' not in self.df.columns: self.df['thetao'] = 15.0
+        if 'CHL_sat' not in self.df.columns: self.df['CHL_sat'] = 0.0
             
-        # X: (Lat, Lon, Depth, Time_days, u, v, w, bathy)
+        # X: (Lat, Lon, Depth, Time_days, u, v, w, bathy, temp, chl_sat)
         X_numpy = np.column_stack((
             self.df['Latitud'].values,
             self.df['Longitud'].values,
@@ -62,7 +67,9 @@ class CoastalPINNDataset(Dataset):
             self.df['uo'].fillna(0.0).values,
             self.df['vo'].fillna(0.0).values,
             self.df['wo'].fillna(0.0).values,
-            self.df['bathy'].fillna(0.0).values
+            self.df['bathy'].fillna(0.0).values,
+            self.df['thetao'].fillna(15.0).values,
+            self.df['CHL_sat'].fillna(0.0).values
         ))
         
         # y: (Clorofila)
@@ -103,5 +110,5 @@ if __name__ == "__main__":
     if len(ds) > 0:
         x_sample, y_sample = ds[0]
         print("\nEjemplo de Muestra 0:")
-        print(f"  Inputs (Lat, Lon, Prof, Tiempo_Dias, u, v, w, bathy): {x_sample}")
+        print(f"  Inputs (Lat, Lon, Prof, Tiempo_Dias, u, v, w, bathy, temp, chl_sat): {x_sample}")
         print(f"  Target (Clorofila): {y_sample}")

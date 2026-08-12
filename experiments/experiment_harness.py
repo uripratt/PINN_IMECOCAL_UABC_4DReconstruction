@@ -56,9 +56,10 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     batch_v = np.zeros(batch_size)
     batch_w = np.zeros(batch_size)
     batch_temp = np.full(batch_size, 15.0) # Dummy temperature (15C) until real data is ingested
+    batch_chl_sat = np.zeros(batch_size)   # Dummy CHL sat
     
-    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, w, bathy, temp)
-    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_w, batch_bathy, batch_temp))
+    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, w, bathy, temp, chl_sat)
+    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_w, batch_bathy, batch_temp, batch_chl_sat))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
 def get_satellite_batch(batch_size, device, max_time_days):
