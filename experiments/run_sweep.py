@@ -42,6 +42,7 @@ def run_battery():
             lr=cfg["lr"],
             curriculum_epochs=cfg["curriculum"],
             colloc_ratio=cfg["colloc_ratio"],
+            lambda_sat=10.0,
             lbfgs_epochs=cfg["lbfgs"],
             run_name=cfg["name"]
         )
