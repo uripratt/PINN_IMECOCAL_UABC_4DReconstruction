@@ -15,7 +15,7 @@
 \usepackage{hyperref}
 \usepackage{amsmath}
 
-\title{\textbf{Hacia la Reconstrucción 4D Continua de Clorofila-$a$ en la Corriente de California}\\
+\title{Hacia la Reconstrucción 4D Continua de Clorofila-$a$ en la Corriente de California\\[0.8cm]
 \large Análisis Exploratorio de Datos IMECOCAL (1998-2012) y Formulación de Modelos Informados por la Física}
 \author{\textbf{Reporte Científico y Propuesta de Modelado} \\ Programa de Estancias de Investigación}
 \date{\today}
@@ -39,14 +39,11 @@ El conjunto de datos original consta de perfiles de clorofila-$a$ calibrados a p
 \subsection{Filtrado y Estandarización Vertical}
 Un análisis de la cobertura vertical (esfuerzo de muestreo por nivel de presión) evidenció que más del $90\%$ de los lances poseen registros en la capa superficial (0, 10 y 20 m), disminuyendo al $90.7\%$ a los 50 m y al $83.0\%$ a los 100 m. Sin embargo, los niveles de 150 m ($8.0\%$) y 200 m ($7.4\%$) presentaron una cobertura estadísticamente insuficiente, por lo que fueron excluidos del análisis. 
 
-Para homogenizar la base de datos y construir perfiles comparables, se aplicó un algoritmo de discretización vertical (*snapping*) asignando cada observación a la profundidad estándar más cercana dentro del conjunto $z \in \{0, 10, 20, 50, 100\}$ metros. En caso de existir múltiples lecturas asignadas a un mismo nivel en un único perfil, se calculó su promedio aritmético.
+Para homogenizar la base de datos y construir perfiles comparables para la visualización, se aplicó un algoritmo de discretización vertical (\textit{snapping}) asignando cada observación a la profundidad estándar más cercana dentro del conjunto $z \in \{0, 10, 20, 50, 100\}$ metros. En caso de existir múltiples lecturas asignadas a un mismo nivel en un único perfil, se calculó su promedio aritmético.
 
-\subsection{Cálculo del Gradiente Costa-Océano}
-Para cuantificar la transición espacial entre las zonas de surgencia costera y las aguas oligotróficas del océano abierto, se calculó la distancia geodésica transversal de cada estación a la costa. Para ello, se identificó la estación más costera (aquella con el menor índice de estación) de cada línea de transecto $L$ como el punto de referencia costero $P_0(L) = (\text{Lat}_0, \text{Lon}_0)$. La distancia $d_i$ de cualquier otra estación $P_i = (\text{Lat}_i, \text{Lon}_i)$ perteneciente a la línea $L$ se estimó mediante la fórmula de Haversine:
-\begin{equation}
-d_i = 2R \arcsin \left( \sqrt{\sin^2\left(\frac{\Delta \text{Lat}}{2}\right) + \cos(\text{Lat}_0)\cos(\text{Lat}_i)\sin^2\left(\frac{\Delta \text{Lon}}{2}\right)} \right)
-\end{equation}
-donde $R = 6371$ km es el radio medio terrestre, $\Delta \text{Lat} = \text{Lat}_i - \text{Lat}_0$ y $\Delta \text{Lon} = \text{Lon}_i - \text{Lon}_0$ en radianes. Las observaciones superficiales ($\le 10$ m) se agruparon en intervalos transversales de 20 km para la construcción de diagramas espacio-temporales y la comparación de anomalías interanuales.
+Nota Crítica sobre el Modelado (PINN): Es imperativo destacar que este proceso de discretización vertical (\textit{snapping}) se realizó única y exclusivamente para el análisis estadístico exploratorio documentado en este reporte. Durante la fase de asimilación (Sección 5), la Red Neuronal Informada por la Física (PINN) descarta esta tabla estandarizada y utiliza los lances en bruto. Al ser un aproximador funcional mesh-free, la PINN ingiere la coordenada de profundidad exacta continua $z$ de cada observación, capitalizando el 100\% de la varianza vertical original que de otro modo se perdería al forzar los datos en capas rígidas.
+
+
 
 \section{Datos y Dominio Espacial}
 El dominio geográfico de estudio y la ubicación de las estaciones oceanográficas se presentan en la Figura \ref{fig:mapa}, superpuestos a la batimetría regional obtenida del modelo ETOPO1 de la NOAA. La clorofila media en la capa superficial ($\le 10$ m) ilustra el claro contraste espacial, observándose concentraciones significativamente más elevadas ($> 1.5$ mg/m$^3$) adyacentes al litoral de Baja California, asociadas a la plataforma continental y zonas de surgencia activa, frente a condiciones oligotróficas ($< 0.3$ mg/m$^3$) en el dominio oceánico.
@@ -57,6 +54,11 @@ El dominio geográfico de estudio y la ubicación de las estaciones oceanográfi
     \caption{Distribución geográfica de las estaciones de monitoreo IMECOCAL sobre la batimetría regional y la costa noroccidental de Baja California. Las anotaciones (ej. L97) indican las líneas de transecto transversales. El color de los marcadores representa la concentración promedio de clorofila-$a$ superficial ($\le 10$ m).}
     \label{fig:mapa}
 \end{figure}
+
+\subsection{Esfuerzo de Muestreo Histórico}
+La Tabla \ref{tab:esfuerzo} detalla la matriz de cobertura para las 123 estaciones analizadas en el periodo 1998-2012. Cada celda indica el número total de perfiles de clorofila procesados por estación y año. Las celdas sombreadas en verde pastel corresponden a las tres estaciones que registraron los picos máximos absolutos de clorofila en la columna de agua para cada año, permitiendo mapear los centros de alta producción biológica primaria de la región.
+
+\input{tabla_esfuerzo_latex.tex}
 
 \section{Línea Base: Análisis Exploratorio de Datos}
 \subsection{Estructura Vertical Promedio}
@@ -92,7 +94,13 @@ El ciclo estacional de la clorofila-$a$ está íntimamente acoplado al régimen 
 \end{figure}
 
 \subsection{Estructura Transversal y Gradiente Costa-Océano}
-La distribución espacial de la clorofila-$a$ en el Sistema de la Corriente de California exhibe un decaimiento exponencial a medida que aumenta la distancia a la costa. La Figura \ref{fig:gradiente} integra la evolución espacial y temporal de los datos.
+Para cuantificar la transición espacial entre las zonas de surgencia costera y las aguas oligotróficas del océano abierto, se calculó primero la distancia geodésica transversal de cada estación a la costa. Para ello, se identificó la estación más costera (aquella con el menor índice de estación) de cada línea de transecto $L$ como el punto de referencia costero $P_0(L) = (\text{Lat}_0, \text{Lon}_0)$. La distancia $d_i$ de cualquier otra estación $P_i = (\text{Lat}_i, \text{Lon}_i)$ perteneciente a la línea $L$ se estimó mediante la fórmula de Haversine:
+\begin{equation}
+d_i = 2R \arcsin \left( \sqrt{\sin^2\left(\frac{\Delta \text{Lat}}{2}\right) + \cos(\text{Lat}_0)\cos(\text{Lat}_i)\sin^2\left(\frac{\Delta \text{Lon}}{2}\right)} \right)
+\end{equation}
+donde $R = 6371$ km es el radio medio terrestre, $\Delta \text{Lat} = \text{Lat}_i - \text{Lat}_0$ y $\Delta \text{Lon} = \text{Lon}_i - \text{Lon}_0$ en radianes. Las observaciones superficiales ($\le 10$ m) se agruparon en intervalos transversales de 20 km para su graficación.
+
+La distribución espacial resultante de la clorofila-$a$ en el Sistema de la Corriente de California exhibe un decaimiento exponencial a medida que aumenta esta distancia a la costa calculada. La Figura \ref{fig:gradiente} integra la evolución espacial y temporal de los datos bajo este marco de referencia.
 
 \begin{figure}[H]
     \centering
@@ -132,36 +140,70 @@ Para resolver esta ecuación y reconstruir el campo continuo, la literatura ocea
     \end{equation}
     donde $\mathcal{R}$ es el residuo de la ecuación diferencial evaluado en un conjunto de puntos colocalizados virtuales $\mathbf{x}_j$. Este enfoque permite asimilar los perfiles dispersos de IMECOCAL y reconstruir campos 3D consistentes con la dinámica de fluidos marina sin requerir una rejilla numérica rígida.
 
-\section{Estrategia de Modelado y Framework de Validación}
-Con el fin de asegurar un desarrollo ágil, eficiente y metodológicamente riguroso, la implementación de la fase de modelado se estructurará bajo un framework de tres arneses de software (Harness) coordinados por una arquitectura de agentes virtuales de IA (según lo definido en el plan del proyecto \texttt{agents.md}):
+\section{Metodología Computacional: Arquitectura PINN 4D}
+Para operacionalizar la formulación física descrita anteriormente, se diseñó una arquitectura de \textit{Physics-Informed Neural Network} (PINN) adaptada a la naturaleza discontinua del muestreo oceanográfico. La Figura \ref{fig:pinn_architecture_master} ilustra el esquema sintético tridimensional y el flujo de trabajo computacional del modelo, integrando ingesta 4D, adimensionalización, el operador físico y el arnés de entrenamiento.
 
 \begin{figure}[H]
     \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \textbf{Suite de Validación (Harness)}
-        \begin{itemize}
-            \item \textbf{Test Harness:} Verifica de forma unitaria los operadores diferenciales de PyTorch, evitando inestabilidades numéricas en la física.
-            \item \textbf{Evaluation Harness:} Aplica validación cruzada espacial (omitir líneas de transecto completas) y temporal (omitir años completos) midiendo RMSE y sesgo.
-            \item \textbf{Experiment Harness:} Registra hiperparámetros, pesos de pérdidas físicas y curvas de entrenamiento.
-        \end{itemize}
-    \end{minipage}
-    \hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \textbf{Flujo de Trabajo Agéntico}
-        \begin{itemize}
-            \item \textbf{Agente 1 (Datos):} Curación e integración de covariables satelitales (Copernicus SST, altimetría).
-            \item \textbf{Agente 2 (Física):} Codificación de la pérdida basada en transporte diferencial.
-            \item \textbf{Agente 3 (Modelos):} Diseño del optimizador y entrenamiento del PINN/Transformer.
-            \item \textbf{Agente 4 (Validación):} Ejecución del arnés de métricas y renderizado de campos 4D.
-        \end{itemize}
-    \end{minipage}
+    \includegraphics[width=\textwidth]{pinn_scientific_architecture.png}
+    \caption{Arquitectura científica del modelo PINN 4D para la reconstrucción de Clorofila-$a$ en IMECOCAL. Muestra la ingesta de datos 4D (incluyendo $w_0$), la red neuronal simétrica con activación Softplus, la adimensionalización con regla de la cadena en PyTorch Autograd, la formulación PDE 3D de Advección-Difusión-Reacción, la penalización Dirichlet en la costa y el arnés de optimización híbrida Adam + L-BFGS.}
+    \label{fig:pinn_architecture_master}
 \end{figure}
 
-\section{Esfuerzo de Muestreo Histórico}
-La Tabla \ref{tab:esfuerzo} detalla la matriz de cobertura para las 123 estaciones analizadas en el periodo 1998-2012. Cada celda indica el número total de perfiles de clorofila procesados por estación y año. Las celdas sombreadas en verde pastel corresponden a las tres estaciones que registraron los picos máximos absolutos de clorofila en la columna de agua para cada año, permitiendo mapear los centros de alta producción biológica primaria de la región.
+\subsection{Integración de Datos y Covariables Físicas}
+El modelo no opera de forma aislada sobre los perfiles de clorofila. Para que la ecuación de advección-difusión posea significado físico, es mandatorio inyectar campos continuos de forzamiento hidrográfico. Se integró la base de datos IMECOCAL con dos fuentes satelitales masivas (previamente interpoladas a las coordenadas y fechas de las observaciones in-situ):
+\begin{itemize}
+    \item \textbf{Copernicus Marine Service (CMEMS GLORYS12V1):} Proporciona los tensores tridimensionales de velocidad de corrientes $(u, v)$ en metros por segundo y el componente de afloramiento vertical $w_0$.
+    \item \textbf{NOAA ETOPO1:} Proporciona el modelo de elevación batimétrica del lecho marino regional.
+\end{itemize}
+\textbf{Normalización Z-score In-Graph:} Para prevenir el colapso del gradiente en la red neuronal provocado por la extrema disparidad de escalas de las magnitudes de entrada (ej. variable tiempo $\sim 5000$ días frente a las velocidades de corrientes $\sim 0.1$ m/s), se implementó una capa de estandarización estadística incrustada estructuralmente en el propio grafo computacional (\textit{In-Graph}) de PyTorch. Esto garantiza que las variables se mapeen internamente a un rango acotado $[-1, 1]$, permitiendo que el sistema \texttt{autograd} aplique la regla de la cadena de las derivadas parciales de forma matemáticamente perfecta y numéricamente estable ($\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \cdot \sigma_X^{-1}$).
 
-\input{tabla_esfuerzo_latex.tex}
+\subsection{Diseño de la Red Neuronal (MLP)}
+La arquitectura del aproximador funcional $\hat{C}(\mathbf{x}, t; \theta)$ consta de un Perceptrón Multicapa (MLP) profundo. La capa de entrada procesa las cuatro coordenadas espaciotemporales (Latitud, Longitud, Profundidad, Tiempo en días continuos). El núcleo está conformado por 6 capas ocultas densas de 128 neuronas cada una. 
+La selección de las funciones de activación fue estrictamente definida por los requerimientos del operador diferencial acoplado:
+\begin{itemize}
+    \item \textbf{Capas Ocultas (\texttt{Tanh}):} Se descartó la familia estándar de activación ReLU debido a que sus segundas derivadas son nulas (lo cual destruiría iterativamente el cálculo del operador Laplaciano de difusión turbulenta). La tangente hiperbólica garantiza un hiperespacio de soluciones infinitamente diferenciable y continuo.
+    \item \textbf{Capa de Salida (\texttt{Softplus}):} Se forzó una transformación log-exponencial (Softplus) sobre la predicción escalar final para imponer una restricción biológica fundamental inviolable: la concentración de clorofila-$a$ no puede adquirir valores matemáticamente negativos ($\hat{C} > 0$).
+\end{itemize}
+
+\subsection{Diferenciación Automática y Pérdida Física 3D}
+El rasgo distintivo de la arquitectura PINN desarrollada es el reemplazo absoluto de los operadores numéricos de diferencias finitas sobre mallas espaciales rígidas por diferenciación automática. La función de pérdida física computa el residuo de la Ecuación Diferencial Parcial (PDE) analítica 3D incorporando advección horizontal y vertical ($w_0$):
+\begin{equation}
+\mathcal{L}_{PDE} = \frac{1}{N} \sum_{i=1}^N \left( \frac{\partial \hat{C}}{\partial t} + u_i \frac{\partial \hat{C}}{\partial x} + v_i \frac{\partial \hat{C}}{\partial y} + w_i \frac{\partial \hat{C}}{\partial z} - K_h \left( \frac{\partial^2 \hat{C}}{\partial x^2} + \frac{\partial^2 \hat{C}}{\partial y^2} \right) + R \cdot \hat{C} \right)^2
+\end{equation}
+Al minimizar recursivamente este residuo, la red neuronal aprende a interconectar las muestras discretas separadas del IMECOCAL emulando las dinámicas y trayectorias dictadas por las corrientes de Copernicus, dotando de cinemática de fluidos estricta a la interpolación espacial vacía.
+
+\subsection{Condiciones de Frontera de Dirichlet (Máscara Terrestre)}
+La compleja topología costera de la península de Baja California presenta un alto riesgo de que el optimizador matemático genere gradientes biológicos artificiales propagándose sobre tierra firme. Se integró una rigurosa función de penalización de fronteras de Dirichlet modulada por el tensor de batimetría:
+\begin{equation}
+\mathcal{L}_{Dirichlet} = \lambda_D \sum_{j} \left( \hat{C}(\mathbf{x}_j, t_j) \right)^2 \quad \text{donde} \quad \text{Bathy}_j > 0
+\end{equation}
+Esta frontera blanda pero severa empuja forzosamente la predicción neuronal a $0.0$ mg/m$^3$ sobre cualquier coordenada cuya orografía corresponda a elevación continental ($colloc\_ratio = 4\times$), constriñendo el dominio de soluciones fluidas estrictamente al cuerpo oceánico costero.
+
+\subsection{Curriculum Learning, Optimización Anti-NaN y Hoja de Ruta SOTA}
+La convergencia de una función de pérdida multiobjetivo híbrida $\mathcal{L}(\theta) = \mathcal{L}_{data} + \lambda_{phys} \mathcal{L}_{PDE} + \mathcal{L}_{Dirichlet}$ presenta severos conflictos de gradientes en sus etapas tempranas. Si se exige obediencia física irrestricta desde el inicio del entrenamiento, el modelo colapsa al intentar conservar flujos sobre estimaciones base erróneas. Para mitigar esta inestabilidad (\textit{Physics-Data Conflict}), el optimizador híbrido (\texttt{Adam} + \texttt{L-BFGS}) se acopló a un esquema de \textbf{Curriculum Learning}: el ponderador $\lambda_{phys}$ inicia en $0.0$ y crece linealmente a lo largo del entrenamiento. Adicionalmente, el optimizador L-BFGS incorpora una rutina interna de re-inicialización por mini-batch y un mecanismo de \textit{Anti-NaN Rollback}, revirtiendo los pesos al estado estable previo ante cualquier corrupción del Hessiano.
+
+Con el fin de asegurar una trazabilidad metodológica robusta y demostrar el poder predictivo real de la red neuronal, el entrenamiento se orquestó bajo un \textbf{Experiment Harness} avanzado. Este arnés implementa un esquema estricto de \textbf{Validación Científica (Hold-out)} separando aleatoriamente un 15\% de las observaciones del barco como conjunto de prueba oculto (Test Set). El modelo es evaluado sobre estas coordenadas no vistas al final de cada epoch, registrando el verdadero error de generalización (\texttt{Test\_Loss}). Toda la telemetría se transmite a servidores MLflow en la nube y se persiste concurrentemente de forma local en archivos CSV para evitar la pérdida de datos. La Tabla \ref{tab:pinn_sota_summary} resume la arquitectura final y la hoja de ruta de mejoras SOTA acopladas al proyecto.
+
+\begin{table}[H]
+\centering
+\caption{Resumen de componentes físicos, formulaciones y hoja de ruta SOTA de la arquitectura PINN 4D para IMECOCAL.}
+\label{tab:pinn_sota_summary}
+\vspace{0.2cm}
+\small
+\begin{tabular}{|l|c|p{8.2cm}|}
+\hline
+\textbf{Componente / Mejora} & \textbf{Estado} & \textbf{Descripción e Impacto Computacional / Físico} \\ \hline
+Afloramiento 3D ($w_0$) & \textbf{Aplicado} & Inyección de velocidad vertical $w_0$ y término $w \frac{\partial C}{\partial z}$ en la PDE 3D de Advección-Difusión-Reacción. \\ \hline
+Adimensionalización & \textbf{Aplicado} & Z-score in-graph con regla de la cadena Autograd ($\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \sigma_X^{-1}$) y unidades homogeneizadas en $[1/\text{día}]$. \\ \hline
+Land Mask Dirichlet & \textbf{Aplicado} & Puntos de colocación ($colloc\_ratio = 4\times$) sobre continente penalizando $\hat{C} > 0$ en tierra firme ($\mathcal{L}_{Dirichlet}$). \\ \hline
+Validación Científica & \textbf{Aplicado} & Partición estricta (Hold-out 85/15) de estaciones para evaluación del \texttt{Test\_Loss} e inferencia en coordenadas ocultas. \\ \hline
+Robustez y Persistencia & \textbf{Aplicado} & Optimizador híbrido con rollback Anti-NaN en L-BFGS y persistencia dual de métricas (MLflow nube + CSV local). \\ \hline
+Forzamiento Satelital ($z=0$) & \textit{Pendiente} & Anclaje de biomasa superficial mediante MODIS / Ocean Color como condición de frontera blanda a profundidad $z=0$. \\ \hline
+Producción Biológica & \textit{Pendiente} & Término fotosintético $+ P_0 e^{-z / z_{photic}} C$ en la zona fótica en lugar del decaimiento pasivo simple $-R \cdot C$. \\ \hline
+Ponderación Adaptativa NTK & \textit{Pendiente} & Equilibrado dinámico de autovalores del Neural Tangent Kernel (NTK / ReLoBRaLo) sustituyendo el curriculum lineal. \\ \hline
+Laplace-Beltrami Encodings & \textit{Post-Tesis} & Uso de eigenfunciones de Laplace-Beltrami para dominios curvos, imponiendo \textit{hard boundaries} en la costa y aislamiento topológico del Golfo. \\ \hline
+\end{tabular}
+\end{table}
 
 \end{document}
