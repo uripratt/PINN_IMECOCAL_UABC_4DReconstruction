@@ -151,41 +151,48 @@ Para operacionalizar la formulación física descrita anteriormente, se diseñó
 \end{figure}
 
 \subsection{Integración de Datos y Covariables Físicas}
-El modelo no opera de forma aislada sobre los perfiles de clorofila. Para que la ecuación de advección-difusión posea significado físico, es mandatorio inyectar campos continuos de forzamiento hidrográfico. Se integró la base de datos IMECOCAL con dos fuentes satelitales masivas (previamente interpoladas a las coordenadas y fechas de las observaciones in-situ):
+El modelo no opera de forma aislada sobre los perfiles de clorofila. Para que la ecuación de advección-difusión posea significado físico, es mandatorio inyectar campos continuos de forzamiento hidrográfico. La ingesta de datos se estructura en tres componentes clave:
 \begin{itemize}
-    \item \textbf{Copernicus Marine Service (CMEMS GLORYS12V1):} Proporciona los tensores tridimensionales de velocidad de corrientes $(u, v)$ en metros por segundo y el componente de afloramiento vertical $w_0$.
-    \item \textbf{NOAA ETOPO1:} Proporciona el modelo de elevación batimétrica del lecho marino regional.
+    \item \textbf{Observaciones Empíricas (Train/Test Split):} Los lances del IMECOCAL son preprocesados mediante \texttt{scikit-learn} separándolos en un 85\% de entrenamiento y un 15\% estricto de \textit{Hold-out Validation} para certificar la generalización en coordenadas no vistas.
+    \item \textbf{Dinámica Oceánica (CMEMS GLORYS12V1):} Proporciona los tensores tridimensionales de velocidad de corrientes $(u, v)$ y el afloramiento vertical $w_0$.
+    \item \textbf{Anclaje Superficial Satelital:} Durante el batcheo, se inyectan coordenadas puramente superficiales ($z=0$) simulando forzamientos de clorofila satelital (MODIS), empujando al modelo a fijar su superficie independientemente de los perfiles profundos.
 \end{itemize}
-\textbf{Normalización Z-score In-Graph:} Para prevenir el colapso del gradiente en la red neuronal provocado por la extrema disparidad de escalas de las magnitudes de entrada (ej. variable tiempo $\sim 5000$ días frente a las velocidades de corrientes $\sim 0.1$ m/s), se implementó una capa de estandarización estadística incrustada estructuralmente en el propio grafo computacional (\textit{In-Graph}) de PyTorch. Esto garantiza que las variables se mapeen internamente a un rango acotado $[-1, 1]$, permitiendo que el sistema \texttt{autograd} aplique la regla de la cadena de las derivadas parciales de forma matemáticamente perfecta y numéricamente estable ($\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \cdot \sigma_X^{-1}$).
+\textbf{Normalización Z-score In-Graph:} Para prevenir el colapso del gradiente en la red neuronal provocado por la extrema disparidad de escalas espaciotemporales (ej. variable tiempo $\sim 5000$ días frente a las velocidades de corrientes $\sim 0.1$ m/s), se implementó una capa de estandarización incrustada estructuralmente en el grafo de PyTorch. Esto permite que \texttt{autograd} aplique la regla de la cadena de las derivadas parciales de forma matemáticamente perfecta: $\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \cdot \sigma_X^{-1}$.
 
 \subsection{Diseño de la Red Neuronal (MLP)}
-La arquitectura del aproximador funcional $\hat{C}(\mathbf{x}, t; \theta)$ consta de un Perceptrón Multicapa (MLP) profundo. La capa de entrada procesa las cuatro coordenadas espaciotemporales (Latitud, Longitud, Profundidad, Tiempo en días continuos). El núcleo está conformado por 6 capas ocultas densas de 128 neuronas cada una. 
-La selección de las funciones de activación fue estrictamente definida por los requerimientos del operador diferencial acoplado:
+La arquitectura del aproximador funcional $\hat{C}(\mathbf{x}, t; \theta)$ consta de un Perceptrón Multicapa (MLP) profundo, recibiendo como entrada las cuatro coordenadas espaciotemporales (Latitud, Longitud, Profundidad, Tiempo). El núcleo computacional está conformado por 6 capas ocultas densas de 128 neuronas cada una. La selección de activaciones obedece puramente a requerimientos físicos:
 \begin{itemize}
-    \item \textbf{Capas Ocultas (\texttt{Tanh}):} Se descartó la familia estándar de activación ReLU debido a que sus segundas derivadas son nulas (lo cual destruiría iterativamente el cálculo del operador Laplaciano de difusión turbulenta). La tangente hiperbólica garantiza un hiperespacio de soluciones infinitamente diferenciable y continuo.
-    \item \textbf{Capa de Salida (\texttt{Softplus}):} Se forzó una transformación log-exponencial (Softplus) sobre la predicción escalar final para imponer una restricción biológica fundamental inviolable: la concentración de clorofila-$a$ no puede adquirir valores matemáticamente negativos ($\hat{C} > 0$).
+    \item \textbf{Capas Ocultas (\texttt{Tanh}):} Se descartó la activación ReLU porque sus segundas derivadas son nulas (destruyendo el Laplaciano de difusión). La tangente hiperbólica garantiza un hiperespacio de soluciones infinitamente diferenciable.
+    \item \textbf{Capa de Salida (\texttt{Softplus}):} Se fuerza una transformación log-exponencial sobre la predicción escalar para imponer la inviolable restricción biológica: $\hat{C} > 0$.
 \end{itemize}
 
-\subsection{Diferenciación Automática y Pérdida Física 3D}
-El rasgo distintivo de la arquitectura PINN desarrollada es el reemplazo absoluto de los operadores numéricos de diferencias finitas sobre mallas espaciales rígidas por diferenciación automática. La función de pérdida física computa el residuo de la Ecuación Diferencial Parcial (PDE) analítica 3D incorporando advección horizontal y vertical ($w_0$):
+\subsection{Diferenciación Automática y Física Inversa Biogeoquímica}
+El rasgo distintivo de esta arquitectura es el uso de PyTorch Autograd para evaluar la Ecuación Diferencial Parcial (PDE) analítica 3D. El residuo computa el transporte por corrientes de CMEMS y la difusión turbulenta acoplada a un modelo biológico de crecimiento:
 \begin{equation}
-\mathcal{L}_{PDE} = \frac{1}{N} \sum_{i=1}^N \left( \frac{\partial \hat{C}}{\partial t} + u_i \frac{\partial \hat{C}}{\partial x} + v_i \frac{\partial \hat{C}}{\partial y} + w_i \frac{\partial \hat{C}}{\partial z} - K_h \left( \frac{\partial^2 \hat{C}}{\partial x^2} + \frac{\partial^2 \hat{C}}{\partial y^2} \right) + R \cdot \hat{C} \right)^2
+\mathcal{F}_\theta = \frac{\partial \hat{C}}{\partial t} + u \frac{\partial \hat{C}}{\partial x} + v \frac{\partial \hat{C}}{\partial y} + w \frac{\partial \hat{C}}{\partial z} - K_h \left( \frac{\partial^2 \hat{C}}{\partial x^2} + \frac{\partial^2 \hat{C}}{\partial y^2} \right) - \text{Crecimiento} + \text{Mortalidad}
 \end{equation}
-Al minimizar recursivamente este residuo, la red neuronal aprende a interconectar las muestras discretas separadas del IMECOCAL emulando las dinámicas y trayectorias dictadas por las corrientes de Copernicus, dotando de cinemática de fluidos estricta a la interpolación espacial vacía.
 
-\subsection{Condiciones de Frontera de Dirichlet (Máscara Terrestre)}
-La compleja topología costera de la península de Baja California presenta un alto riesgo de que el optimizador matemático genere gradientes biológicos artificiales propagándose sobre tierra firme. Se integró una rigurosa función de penalización de fronteras de Dirichlet modulada por el tensor de batimetría:
+En lugar de imponer parámetros fijos, el modelo resuelve un problema de \textbf{Física Inversa}. La red descubre empíricamente los parámetros biológicos regionales optimizándolos junto con los pesos de la neurona mediante retropropagación (\texttt{nn.Parameter}):
 \begin{equation}
-\mathcal{L}_{Dirichlet} = \lambda_D \sum_{j} \left( \hat{C}(\mathbf{x}_j, t_j) \right)^2 \quad \text{donde} \quad \text{Bathy}_j > 0
+\text{Crecimiento} = \mu_{max} \cdot f_{light}(z) \cdot f_{nutrients}(T) \cdot \hat{C} \quad ; \quad f_{light}(z) = e^{-k_e |z|}
 \end{equation}
-Esta frontera blanda pero severa empuja forzosamente la predicción neuronal a $0.0$ mg/m$^3$ sobre cualquier coordenada cuya orografía corresponda a elevación continental ($colloc\_ratio = 4\times$), constriñendo el dominio de soluciones fluidas estrictamente al cuerpo oceánico costero.
+Donde la tasa máxima de crecimiento ($\mu_{max}$), el coeficiente de atenuación lumínica ($k_e$) y la tasa de mortalidad ($m$) son aprendidos a partir del decaimiento natural de la biomasa observada. La pérdida física minimiza $\mathcal{L}_{PDE} = \frac{1}{N} \sum ||\mathcal{F}_\theta||^2$.
 
-\subsection{Curriculum Learning, Optimización Anti-NaN y Hoja de Ruta SOTA}
-La convergencia de una función de pérdida multiobjetivo híbrida $\mathcal{L}(\theta) = \mathcal{L}_{data} + \lambda_{phys} \mathcal{L}_{PDE} + \mathcal{L}_{Dirichlet} + \lambda_{sat} \mathcal{L}_{sat}$ presenta severos conflictos de gradientes en sus etapas tempranas. Si se exige obediencia física irrestricta desde el inicio del entrenamiento, el modelo colapsa al intentar conservar flujos sobre estimaciones base erróneas. Para mitigar esta inestabilidad (\textit{Physics-Data Conflict}), el optimizador híbrido (\texttt{Adam} + \texttt{L-BFGS}) se acopló a un esquema de \textbf{Curriculum Learning}: el ponderador $\lambda_{phys}$ inicia en $0.0$ y crece linealmente a lo largo del entrenamiento. Adicionalmente, el optimizador L-BFGS incorpora una rutina interna de re-inicialización por mini-batch y un mecanismo de \textit{Anti-NaN Rollback}, revirtiendo los pesos al estado estable previo ante cualquier corrupción del Hessiano.
+\subsection{Condiciones de Frontera: Dirichlet y Laplace-Beltrami}
+La orografía de Baja California presenta un alto riesgo de que el optimizador genere gradientes artificiales propagándose sobre tierra firme. Se integró una función de penalización \textit{Dirichlet} inyectando nubes de puntos de colocación ($colloc\_ratio = 4\times$) obtenidos de la batimetría de ETOPO:
+\begin{equation}
+\mathcal{L}_{Dirichlet} = \lambda_D \sum \left( \hat{C}(\mathbf{x}_j, t_j) \right)^2 \quad \text{donde} \quad \text{Bathy}_j > 0
+\end{equation}
+\textbf{Evolución Arquitectónica (Post-Tesis):} Aunque este método impone un confinamiento oceánico suave, el modelo sigue operando en un dominio Euclidiano plano que permite cierta "extrapolación" numérica hacia cuencas separadas (ej. Golfo de California). Como evolución de Estado del Arte, se propone parametrizar el dominio espacial de la PINN utilizando un Positional Encoding fundamentado en las \textbf{Eigenfunciones del operador de Laplace-Beltrami} calculadas sobre la variedad Riemanniana del océano. Esto garantizará analíticamente un valor estricto de cero absoluto en la costa (\textit{Hard Boundaries}) y aislamiento topológico inquebrantable.
 
-Además, el modelo ya no solo interpola, sino que resuelve un problema de \textbf{Física Inversa}, descubriendo empíricamente parámetros biológicos como la tasa máxima de crecimiento ($\mu_{max}$) y la atenuación de luz ($k_e$) directamente desde los datos mediante retropropagación, anclando el sistema superficial con forzamientos satelitales en $z=0$.
-
-Con el fin de asegurar una trazabilidad metodológica robusta y demostrar el poder predictivo real de la red neuronal, el entrenamiento se orquestó bajo un \textbf{Experiment Harness} avanzado. Este arnés implementa un esquema estricto de \textbf{Validación Científica (Hold-out)} separando aleatoriamente un 15\% de las observaciones del barco como conjunto de prueba oculto (Test Set). El modelo es evaluado sobre estas coordenadas no vistas al final de cada epoch, registrando el verdadero error de generalización (\texttt{Test\_Loss}). Toda la telemetría se transmite a servidores MLflow en la nube y se persiste concurrentemente de forma local en archivos CSV para evitar la pérdida de datos. La Tabla \ref{tab:pinn_sota_summary} resume la arquitectura final y la hoja de ruta de mejoras SOTA acopladas al proyecto.
+\subsection{Arnés de Entrenamiento SOTA (Harness)}
+La convergencia de una pérdida multiobjetivo $\mathcal{L} = \mathcal{L}_{data} + \lambda_{phys} \mathcal{L}_{PDE} + \mathcal{L}_{Dirichlet} + \lambda_{sat} \mathcal{L}_{sat}$ presenta severos conflictos de gradientes en etapas tempranas (\textit{Physics-Data Conflict}). Para mitigarlo y asegurar reproducibilidad, el \texttt{Experiment Harness} orquesta las siguientes tecnologías:
+\begin{itemize}
+    \item \textbf{Curriculum Learning:} El ponderador físico $\lambda_{phys}$ inicia en $0.0$ (permitiendo que la red asimile primero la topología de los datos) y crece linealmente a $1.0$.
+    \item \textbf{Híbrido Adam + L-BFGS con Anti-NaN Rollback:} Tras estabilizarse con el descenso estocástico global de Adam, el refinamiento pasa a un algoritmo L-BFGS (Cuasi-Newton) re-inicializado por mini-batch. Si el Hessiano colapsa numéricamente (generando \texttt{NaN}s), el arnés invierte los pesos (\textit{Rollback}) al último estado seguro para no perder el progreso.
+    \item \textbf{Validación y Persistencia Híbrida:} La pérdida empírica del 15\% de observaciones ocultas (\texttt{Test\_Loss}) evalúa el poder de interpolación física real del modelo. La telemetría completa y artefactos se envían simultáneamente a un servidor remoto de MLflow y se respaldan en \texttt{archivos CSV} y \texttt{PNG} locales.
+\end{itemize}
+La Tabla \ref{tab:pinn_sota_summary} resume la arquitectura final y la hoja de ruta de mejoras.
 
 \begin{table}[H]
 \centering
