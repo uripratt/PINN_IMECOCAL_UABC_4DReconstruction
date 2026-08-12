@@ -94,10 +94,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         print(f"Conectando al servidor MLflow remoto: {tracking_uri}")
         mlflow.set_tracking_uri(tracking_uri)
     else:
-        mlruns_dir = os.path.join(os.path.dirname(__file__), 'mlruns')
-        os.makedirs(mlruns_dir, exist_ok=True)
-        print(f"Usando MLflow local: {mlruns_dir}")
-        mlflow.set_tracking_uri(f"file://{mlruns_dir}")
+        db_path = os.path.join(os.path.dirname(__file__), 'mlflow.db')
+        print(f"Usando MLflow local (SQLite): {db_path}")
+        mlflow.set_tracking_uri(f"sqlite:///{db_path}")
         
     mlflow.set_experiment("PINNs_BajaCalifornia")
     
