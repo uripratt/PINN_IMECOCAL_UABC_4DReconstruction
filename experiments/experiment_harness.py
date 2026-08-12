@@ -62,24 +62,7 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_w, batch_bathy, batch_temp, batch_chl_sat))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
-def get_satellite_batch(batch_size, device, max_time_days):
-    """
-    Simula la carga de un batch de Clorofila Satelital L4 de Copernicus.
-    Obliga a la red a anclarse en la superficie (z=0).
-    (Devuelve datos simulados hasta que se integre el dataloader satelital real).
-    """
-    batch_lats = np.random.uniform(28.0, 32.0, batch_size)
-    batch_lons = np.random.uniform(-118.0, -114.0, batch_size)
-    batch_depths = np.zeros(batch_size) # CONDICIÓN CRÍTICA: Superficie (z=0)
-    batch_times = np.random.uniform(0, max_time_days, batch_size)
-    
-    X_sat = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times))
-    
-    # Clorofila satelital simulada (ej. 0.5 mg/m3)
-    y_sat = np.full((batch_size, 1), 0.5)
-    
-    return torch.tensor(X_sat, dtype=torch.float32).to(device), torch.tensor(y_sat, dtype=torch.float32).to(device)
-
+# satellite batch is handled directly in the loop now
 def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=0.5, lbfgs_epochs=0, run_name="PINN_Training"):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
@@ -154,8 +137,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             epoch_sat_loss = 0.0
             epoch_sat_loss = 0.0
             
-            # Curriculum Learning: El peso de la física aumenta gradualmente
-            lambda_phys = (epoch / curriculum_epochs) * 1.0 if epoch < curriculum_epochs else 1.0
+            # Curriculum Learning: El peso de la física aumenta gradualmente hasta 500.0 (para balancear magnitudes)
+            lambda_phys = (epoch / curriculum_epochs) * 500.0 if epoch < curriculum_epochs else 500.0
                 
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
             for batch_x_full, batch_y in pbar:
@@ -187,9 +170,15 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
                 
                 # --- SATELLITE LOSS (Condición de frontera z=0) ---
-                x_sat, y_sat = get_satellite_batch(batch_size, device, max_time_days)
-                pred_sat = model(x_sat)
-                loss_satelite = mse_loss(pred_sat, y_sat)
+                chl_sat = batch_x_full[:, 9:10].to(device)
+                mask_sat = (chl_sat > 0.01).squeeze() # Filtramos nubes/sin datos
+                if mask_sat.any():
+                    x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
+                    x_coords_sat[:, 2] = 0.0 # Forzar profundidad z=0
+                    pred_sat = model(x_coords_sat)
+                    loss_satelite = mse_loss(pred_sat, chl_sat[mask_sat])
+                else:
+                    loss_satelite = torch.tensor(0.0, device=device)
                 
                 # --- TOTAL LOSS ---
                 loss_total = loss_data + lambda_phys * loss_physics + lambda_sat * loss_satelite
@@ -247,7 +236,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             print(f"\nIniciando refinamiento de {lbfgs_epochs} epochs con optimizador L-BFGS...")
             
             # Usamos el peso final del curriculum
-            lambda_phys_final = 1.0 
+            lambda_phys_final = 500.0 
             
             for epoch in range(epochs, epochs + lbfgs_epochs):
                 model.train()
@@ -400,5 +389,5 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
 
 if __name__ == "__main__":
     # Entrenamiento Completo en Servidor (Fase Gold)
-    # Incluye fase Adam + fase L-BFGS
-    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=20, lbfgs_epochs=500)
+    # Incluye fase Adam + fase L-BFGS. lambda_sat se sube a 10.0.
+    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=20, lambda_sat=10.0, lbfgs_epochs=500)
