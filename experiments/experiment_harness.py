@@ -103,7 +103,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     std_x = dataset_x.std(dim=0).numpy()
     print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
     
-    model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=mean_x, input_std=std_x).to(device)
+    model = CoastalPINNModel(num_layers=4, hidden_dim=64, input_mean=mean_x, input_std=std_x).to(device)
     # Pasamos el std_x a la física para corregir la dimensionalidad de las derivadas
     physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
     
@@ -118,8 +118,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             "colloc_ratio": colloc_ratio,
             "learning_rate": lr,
             "curriculum_epochs": curriculum_epochs,
-            "model_layers": 6,
-            "hidden_dim": 128
+            "model_layers": 4,
+            "hidden_dim": 64
         })
         
         history_data_loss = []

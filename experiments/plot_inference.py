@@ -29,9 +29,9 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     if 'input_mean' in state_dict and 'input_std' in state_dict:
         input_mean = state_dict['input_mean'].cpu().numpy()
         input_std = state_dict['input_std'].cpu().numpy()
-        model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std).to(device)
+        model = CoastalPINNModel(num_layers=4, hidden_dim=64, input_mean=input_mean, input_std=input_std).to(device)
     else:
-        model = CoastalPINNModel(num_layers=6, hidden_dim=128).to(device)
+        model = CoastalPINNModel(num_layers=4, hidden_dim=64).to(device)
         
     model.load_state_dict(state_dict)
     model.eval()
@@ -52,6 +52,15 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     print("Calculando predicciones de Clorofila-a (Inferencia continua)...")
     with torch.no_grad():
         preds = model(X_tensor).cpu().numpy()
+        
+    # --- MÁSCARA GEOMÉTRICA (MAR DE CORTÉS) ---
+    # Ecuación de la recta que bordea la costa este de la Península de Baja California.
+    # Lat 32 -> Lon -116.0 | Lat 23 -> Lon -110.0
+    lon_border = -116.0 + (flat_lats - 32.0) * (-0.6666)
+    
+    # Todo lo que esté al este de esa frontera (mayor longitud) se descarta.
+    sea_of_cortez_mask = flat_lons > lon_border
+    preds[sea_of_cortez_mask] = np.nan
         
     # Reconstruir el campo 2D
     C_pred = preds.reshape(resolution, resolution)

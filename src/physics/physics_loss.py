@@ -44,16 +44,6 @@ class CoastalPhysicsPINN(nn.Module):
         dC_ddepth = dC_dX[:, 2:3] / self.std_x[2]
         dC_dtime  = dC_dX[:, 3:4] / self.std_x[3]
         
-        d2C_dlat2 = torch.autograd.grad(
-            dC_dX[:, 0:1], X, grad_outputs=torch.ones_like(dC_dX[:, 0:1]),
-            create_graph=True, retain_graph=True
-        )[0][:, 0:1] / (self.std_x[0] ** 2)
-        
-        d2C_dlon2 = torch.autograd.grad(
-            dC_dX[:, 1:2], X, grad_outputs=torch.ones_like(dC_dX[:, 1:2]),
-            create_graph=True, retain_graph=True
-        )[0][:, 1:2] / (self.std_x[1] ** 2)
-        
         sec_per_day = 86400.0
         m_per_degree = 111139.0
         
@@ -62,9 +52,6 @@ class CoastalPhysicsPINN(nn.Module):
         w = u_velocities[:, 2:3] * sec_per_day
         
         advection = u * dC_dlon + v * dC_dlat + w * dC_ddepth
-        
-        K_deg_day = self.K * sec_per_day / (m_per_degree ** 2)
-        diffusion = K_deg_day * (d2C_dlon2 + d2C_dlat2)
         
         # 5. Ecuación de Reacción-Transporte Biogeoquímico
         z_phys = X[:, 2:3] * self.std_x[2]
@@ -78,7 +65,7 @@ class CoastalPhysicsPINN(nn.Module):
         growth = torch.abs(self.mu_max) * f_light * f_nutrients * C
         mortality = torch.abs(self.m) * C
         
-        pde_residual = dC_dtime + advection - diffusion - growth + mortality
+        pde_residual = dC_dtime + advection - growth + mortality
         
         # --- MÁSCARA DE TIERRA ---
         if bathymetry is not None:
