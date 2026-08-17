@@ -85,7 +85,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     
     # 2. Cargar DataLoader
     print("Preparando DataLoaders (Train/Test Split)...")
-    train_loader, test_loader = get_dataloaders(batch_size=batch_size)
+    train_loader, val_loader = get_dataloaders(batch_size=batch_size)
     
     max_time_days = train_loader.dataset.df['time_days'].max()
     max_depth = train_loader.dataset.df['Profundidad'].max()
@@ -126,9 +126,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         history_data_loss = []
         history_phys_loss = []
         history_sat_loss = []
-        history_test_loss = []
+        history_val_loss = []
         history_steps = []
-        best_test_loss = float('inf')
+        best_val_loss = float('inf')
         best_model_state = None
         
         for epoch in range(epochs):
