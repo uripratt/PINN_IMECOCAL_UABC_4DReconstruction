@@ -20,35 +20,25 @@ class CoastalPhysicsPINN(nn.Module):
 
     def compute_physics_loss(self, model, X, u_velocities, temperature, bathymetry=None):
         """
-        Calcula el residuo de la Ecuación Diferencial (Physics Loss) usando autograd.
-        
-        Parámetros:
-        - model: La red neuronal (PINN) que predice la Clorofila.
-        - X: Tensor de entrada [N, 4] -> (lat, lon, depth, time)
-        - u_velocities: Tensor de velocidades [N, 3] -> (u, v, w)
-        - temperature: Tensor de temperatura [N, 1]
-        - bathymetry: Tensor de batimetría [N, 1] -> elevación (valores > 0 indican tierra)
+        Calcula el residuo de la Ecuación Diferencial (Physics Loss) usando autograd,
+        matemáticamente transformada y evaluada directamente en el ESPACIO LOGARÍTMICO.
         """
         if not X.requires_grad:
             X.requires_grad_(True)
             
+        # L = log1p(C) = log(C + 1)
         C_log = model(X)
-        # CLIPPING DE SEGURIDAD: Evitar que al inicio del entrenamiento valores locos causen Infs en expm1
-        C_log = torch.clamp(C_log, min=-1.0, max=5.0)
         
-        # Deshacemos el logaritmo (expm1) para que el autograd y la PDE
-        # operen matemáticamente en el espacio real físico de la clorofila.
-        C_real = torch.expm1(C_log)
-        
-        dC_dX = torch.autograd.grad(
-            C_real, X, grad_outputs=torch.ones_like(C_real),
+        # Derivamos L directamente, EVITANDO expm1() que causaba Gradient Explosion
+        dL_dX = torch.autograd.grad(
+            C_log, X, grad_outputs=torch.ones_like(C_log),
             create_graph=True, retain_graph=True
         )[0]
         
-        dC_dlat   = dC_dX[:, 0:1] / self.std_x[0]
-        dC_dlon   = dC_dX[:, 1:2] / self.std_x[1]
-        dC_ddepth = dC_dX[:, 2:3] / self.std_x[2]
-        dC_dtime  = dC_dX[:, 3:4] / self.std_x[3]
+        dL_dlat   = dL_dX[:, 0:1] / self.std_x[0]
+        dL_dlon   = dL_dX[:, 1:2] / self.std_x[1]
+        dL_ddepth = dL_dX[:, 2:3] / self.std_x[2]
+        dL_dtime  = dL_dX[:, 3:4] / self.std_x[3]
         
         sec_per_day = 86400.0
         m_per_degree = 111139.0
@@ -57,21 +47,26 @@ class CoastalPhysicsPINN(nn.Module):
         v = u_velocities[:, 1:2] * sec_per_day / m_per_degree
         w = u_velocities[:, 2:3] * sec_per_day
         
-        advection = u * dC_dlon + v * dC_dlat + w * dC_ddepth
+        advection_log = u * dL_dlon + v * dL_dlat + w * dL_ddepth
         
-        # 5. Ecuación de Reacción-Transporte Biogeoquímico
+        # --- PARTE BIOLÓGICA (Fuente / Sumidero) ---
         z_phys = X[:, 2:3] * self.std_x[2]
-        
         f_light = torch.exp(-torch.abs(self.k_e) * z_phys)
         
         T_max = 25.0
         T_min = 10.0
         f_nutrients = torch.clamp((T_max - temperature) / (T_max - T_min), 0.0, 1.0)
         
-        growth = torch.abs(self.mu_max) * f_light * f_nutrients * C_real
-        mortality = torch.abs(self.m) * C_real
+        # Tasa de reacción Neta: R = (Crecimiento - Mortalidad)
+        net_rate = (torch.abs(self.mu_max) * f_light * f_nutrients) - torch.abs(self.m)
         
-        pde_residual = dC_dtime + advection - growth + mortality
+        # Según la Regla de la Cadena, si L = log(C+1), el residuo en espacio log es:
+        # dL/dt + u*dL/dx + ... = R * C / (C+1) = R * (1 - e^-L)
+        # donde e^-L = exp(-C_log)
+        source_log = net_rate * (1.0 - torch.exp(-C_log))
+        
+        # --- RESIDUO DE LA ECUACIÓN TRANSFORMADA ---
+        pde_residual = dL_dtime + advection_log - source_log
         
         # --- MÁSCARA DE TIERRA ---
         if bathymetry is not None:

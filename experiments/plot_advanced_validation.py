@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import torch
@@ -37,13 +38,13 @@ def generate_advanced_validation():
     
     # Cargar PINN
     device = torch.device("cpu")
-    # Usa un modelo generico de las runs actuales
-    model_path = "./experiments/logs_Server/13_08_2026_4Runs/DifusionOut_NueralReduction_MascGeoBati/pinn_model_LR_Bajo_Mucha_Fisica.pth"
+    # Usar el mejor modelo de la batería Log-Transformed
+    model_path = "./experiments/logs_Server/log_error_17/pinn_model_LogPINN_Sat_Medio.pth"
     state_dict = torch.load(model_path, map_location=device, weights_only=False)
     input_mean = state_dict['input_mean'].numpy()
     input_std = state_dict['input_std'].numpy()
     
-    model = CoastalPINNModel(num_layers=4, hidden_dim=64, input_mean=input_mean, input_std=input_std)
+    model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std)
     model.load_state_dict(state_dict)
     model.eval()
     
@@ -59,9 +60,8 @@ def generate_advanced_validation():
     X_tensor = torch.tensor(np.column_stack((flat_lat, flat_lon, flat_z, flat_t)), dtype=torch.float32)
     with torch.no_grad():
         C_pred_log = model(X_tensor).numpy().flatten()
-        # NOTA: En la proxima version usaremos np.expm1(). Aqui el modelo de la RUN1 aun entrenó en Raw.
-        # Ajusto segun si entrenó en log o raw. Como sabemos que entrenó en RAW, no aplicamos expm1.
-        C_pred = C_pred_log 
+        # Nuevo modelo: Aplicamos expm1 para volver al espacio real (mg/m3)
+        C_pred = np.expm1(C_pred_log) 
     
     chl_sat_flat = chl_sat.flatten()
     
@@ -75,13 +75,13 @@ def generate_advanced_validation():
     plt.figure(figsize=(8, 8))
     plt.scatter(sat_valid, pred_valid, alpha=0.1, s=2, c='blue')
     plt.plot([0, 30], [0, 30], 'r--', lw=2) # Linea 1:1
-    plt.xlim(0, 15)
-    plt.ylim(0, 15)
+    plt.xlim(0, 5) # Recortamos a 5 para ver mejor los datos de satelite
+    plt.ylim(0, 5)
     plt.xlabel('MODIS Satélite Chl-a (mg/m³)')
     plt.ylabel('PINN Predicción Chl-a (mg/m³)')
     plt.title(f'Scatter Plot Validación: Superficie (Z=0)\n$R^2$ Correlación Espacial')
     plt.grid(True, alpha=0.3)
-    out_scatter = '/home/uripratt/.gemini/antigravity/brain/d3c64495-f490-4329-a5f6-02bd6ed90021/artifacts/scatter_validation.png'
+    out_scatter = './experiments/scatter_validation.png'
     plt.savefig(out_scatter, dpi=150)
     plt.close()
     
@@ -126,7 +126,7 @@ def generate_advanced_validation():
     ax.set_title('Estructura 3D del DCM (Clorofila > 1.5 mg/m³)')
     plt.colorbar(sc, ax=ax, label='Chl-a (mg/m³)', shrink=0.5)
     
-    out_3d = '/home/uripratt/.gemini/antigravity/brain/d3c64495-f490-4329-a5f6-02bd6ed90021/artifacts/3d_structure.png'
+    out_3d = './experiments/3d_structure.png'
     plt.savefig(out_3d, dpi=150)
     plt.close()
 

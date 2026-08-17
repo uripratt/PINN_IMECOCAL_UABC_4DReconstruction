@@ -20,14 +20,14 @@ def evaluate_vertical_profile():
     
     # IMPORTANTE: Reemplazar por la ruta final de la run que se quiera validar
     # Para la batería, se guardan como pinn_model_LogPINN_Sat_Fuerte.pth, etc.
-    model_path = "./experiments/pinn_model_LogPINN_Sat_Fuerte.pth" 
+    model_path = "./experiments/logs_Server/log_error_17/pinn_model_LogPINN_Sat_Medio.pth" 
     if not os.path.exists(model_path):
         print(f"Buscando modelo en: {model_path} pero no existe. Usa un archivo válido.")
         return
         
     state_dict = torch.load(model_path, map_location=device, weights_only=False)
-    input_mean = state_dict['input_mean'].numpy()
-    input_std = state_dict['input_std'].numpy()
+    input_mean = state_dict['input_mean'].cpu().numpy()
+    input_std = state_dict['input_std'].cpu().numpy()
     
     model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std)
     model.load_state_dict(state_dict)
