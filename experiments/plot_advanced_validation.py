@@ -16,15 +16,8 @@ def generate_advanced_validation():
     target_date_str = '2005-04-15'
     target_date = pd.to_datetime(target_date_str)
     
-    # Lógica dinámica para encontrar el dataset correcto
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if os.path.exists(os.path.join(project_root, 'data/processed/imecocal_augmented_server.csv')):
-        csv_path = os.path.join(project_root, 'data/processed/imecocal_augmented_server.csv')
-    elif os.path.exists(os.path.join(project_root, 'data/processed/imecocal_augmented_local.csv')):
-        csv_path = os.path.join(project_root, 'data/processed/imecocal_augmented_local.csv')
-    else:
-        csv_path = os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
-        
+    csv_path = os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
     df = pd.read_csv(csv_path)
     df['Fecha'] = pd.to_datetime(df['Fecha'])
     t0 = df['Fecha'].min()

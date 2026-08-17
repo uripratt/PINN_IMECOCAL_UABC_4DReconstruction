@@ -14,20 +14,7 @@ class CoastalPINNDataset(Dataset):
         from sklearn.model_selection import train_test_split
         
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-        
-        # Lógica de fallback para detectar si estamos en el Servidor (jovyan) o en Local
-        path_server = os.path.join(project_root, 'data/processed/imecocal_augmented_server.csv')
-        path_local = os.path.join(project_root, 'data/processed/imecocal_augmented_local.csv')
-        path_default = os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
-        
-        if augmented_csv_path and os.path.exists(augmented_csv_path):
-            self.csv_path = augmented_csv_path
-        elif os.path.exists(path_server):
-            self.csv_path = path_server
-        elif os.path.exists(path_local):
-            self.csv_path = path_local
-        else:
-            self.csv_path = path_default
+        self.csv_path = augmented_csv_path or os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
         
         print(f"Cargando dataset preprocesado desde: {self.csv_path}")
         if not os.path.exists(self.csv_path):
