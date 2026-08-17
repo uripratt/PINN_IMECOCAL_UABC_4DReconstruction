@@ -201,27 +201,27 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             
             # --- EVALUACIÓN (TEST SET) ---
             model.eval()
-            epoch_test_loss = 0.0
+            epoch_val_loss = 0.0
             with torch.no_grad():
-                for test_x, test_y in val_loader:
-                    test_x = test_x.to(device)
-                    test_y = test_y.to(device)
-                    x_coords_test = test_x[:, 0:4]
-                    pred_test = model(x_coords_test)
-                    loss_test = mse_loss(pred_test, test_y)
-                    epoch_test_loss += loss_test.item()
-            avg_test_loss = epoch_test_loss / len(val_loader)
+                for val_x, val_y in val_loader:
+                    val_x = val_x.to(device)
+                    val_y = val_y.to(device)
+                    x_coords_val = val_x[:, 0:4]
+                    pred_val = model(x_coords_val)
+                    loss_val = mse_loss(pred_val, val_y)
+                    epoch_val_loss += loss_val.item()
+            avg_val_loss = epoch_val_loss / len(val_loader)
             
             # Early Stopping Check
-            if avg_test_loss < best_test_loss:
-                best_test_loss = avg_test_loss
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
                 best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             
             mlflow.log_metrics({
                 "Data_Loss": avg_data_loss,
                 "Physics_Loss": avg_phys_loss,
                 "Sat_Loss": avg_sat_loss,
-                "Test_Loss": avg_test_loss,
+                "Val_Loss": avg_val_loss,
                 "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss + lambda_sat * avg_sat_loss,
                 "lambda_phys": lambda_phys
             }, step=epoch)
@@ -229,7 +229,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             history_data_loss.append(avg_data_loss)
             history_phys_loss.append(avg_phys_loss)
             history_sat_loss.append(avg_sat_loss)
-            history_test_loss.append(avg_test_loss)
+            history_val_loss.append(avg_val_loss)
             history_steps.append(epoch)
             
         # ==========================================
@@ -337,27 +337,27 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 
                 # --- EVALUACIÓN (TEST SET) L-BFGS ---
                 model.eval()
-                epoch_test_loss = 0.0
+                epoch_val_loss = 0.0
                 with torch.no_grad():
-                    for test_x, test_y in val_loader:
-                        test_x = test_x.to(device)
-                        test_y = test_y.to(device)
-                        x_coords_test = test_x[:, 0:4]
-                        pred_test = model(x_coords_test)
-                        loss_test = mse_loss(pred_test, test_y)
-                        epoch_test_loss += loss_test.item()
-                avg_test_loss = epoch_test_loss / len(val_loader)
+                    for val_x, val_y in val_loader:
+                        val_x = val_x.to(device)
+                        val_y = val_y.to(device)
+                        x_coords_val = val_x[:, 0:4]
+                        pred_val = model(x_coords_val)
+                        loss_val = mse_loss(pred_val, val_y)
+                        epoch_val_loss += loss_val.item()
+                avg_val_loss = epoch_val_loss / len(val_loader)
                 
                 # Early Stopping Check (L-BFGS)
-                if avg_test_loss < best_test_loss:
-                    best_test_loss = avg_test_loss
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
                     best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                 
                 mlflow.log_metrics({
                     "Data_Loss": avg_data_loss,
                     "Physics_Loss": avg_phys_loss,
                     "Sat_Loss": avg_sat_loss,
-                    "Test_Loss": avg_test_loss,
+                    "Val_Loss": avg_val_loss,
                     "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss + lambda_sat * avg_sat_loss,
                     "lambda_phys": lambda_phys_final
                 }, step=epoch)
@@ -365,14 +365,14 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 history_data_loss.append(avg_data_loss)
                 history_phys_loss.append(avg_phys_loss)
                 history_sat_loss.append(avg_sat_loss)
-                history_test_loss.append(avg_test_loss)
+                history_val_loss.append(avg_val_loss)
                 history_steps.append(epoch)
                 
-        print("Entrenamiento completado. Restaurando el mejor modelo según Test Loss...")
+        print("Entrenamiento completado. Restaurando el mejor modelo según Val Loss...")
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
             
-        print(f"Mejor Test Loss alcanzado: {best_test_loss:.4f}")
+        print(f"Mejor Val Loss alcanzado: {best_val_loss:.4f}")
         model_path = os.path.join(os.path.dirname(__file__), f"pinn_model_{run_name}.pth")
         torch.save(model.state_dict(), model_path)
         mlflow.log_artifact(model_path)
@@ -384,7 +384,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             'Data_Loss': history_data_loss,
             'Physics_Loss': history_phys_loss,
             'Sat_Loss': history_sat_loss,
-            'Test_Loss': history_test_loss
+            'Val_Loss': history_val_loss
         })
         csv_path = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.csv")
         metrics_df.to_csv(csv_path, index=False)
@@ -393,7 +393,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         # Generar y guardar gráfico de métricas
         plt.figure(figsize=(10, 6))
         plt.plot(history_steps, history_data_loss, label='Train Data Loss', color='blue')
-        plt.plot(history_steps, history_test_loss, label='Test Loss (Hold-out)', color='green')
+        plt.plot(history_steps, history_val_loss, label='Val Loss (Hold-out)', color='green')
         plt.plot(history_steps, history_phys_loss, label='Physics Loss', color='red')
         plt.yscale('log')
         plt.title('Convergencia del Entrenamiento PINN 4D')
