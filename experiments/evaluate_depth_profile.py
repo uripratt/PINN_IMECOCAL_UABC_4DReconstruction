@@ -64,9 +64,10 @@ def evaluate_vertical_profile():
     y_true = np.array(y_true_list)
     y_pred = np.array(y_pred_list)
     
-    # 4. Agrupar por bloques de profundidad
-    bins = [0, 10, 25, 50, 75, 100, 150, 250]
-    labels = ['0-10m', '10-25m', '25-50m', '50-75m', '75-100m', '100-150m', '150-200m']
+    # 4. Agrupar por las profundidades ESTÁNDAR reales del IMECOCAL
+    # Hemos descubierto que casi todo el dataset está en 0-1, 10, 20, 50, 100, 150 y 200.
+    bins = [0, 5, 15, 35, 75, 125, 175, 250]
+    labels = ['Superficie (0-1m)', '10m', '20m', '50m', '100m', '150m', '200m']
     
     df_eval = pd.DataFrame({'Depth': depths, 'True_Chl': y_true, 'Pred_Chl': y_pred})
     df_eval['Depth_Bin'] = pd.cut(df_eval['Depth'], bins=bins, labels=labels, right=False)
@@ -78,10 +79,10 @@ def evaluate_vertical_profile():
         subset = df_eval[df_eval['Depth_Bin'] == label]
         if len(subset) > 0:
             rmse = np.sqrt(np.mean((subset['True_Chl'] - subset['Pred_Chl'])**2))
-            mean_depth = subset['Depth'].mean()
+            mean_depth = subset['Depth'].median() # Usar mediana para que coincida con el nivel estándar
             rmse_per_bin.append(rmse)
             mean_depth_per_bin.append(mean_depth)
-            print(f"Estrato {label:10s} | N={len(subset):4d} | RMSE = {rmse:.4f} mg/m3")
+            print(f"Nivel {label:15s} | N={len(subset):4d} | RMSE = {rmse:.4f} mg/m3")
             
     # 5. Graficar Perfil Vertical
     plt.figure(figsize=(6, 8))
