@@ -13,7 +13,7 @@ def run_experiment_battery():
     # y ahora vamos a buscar el equilibrio perfecto entre la Física y el Satélite.
     
     # 1. Configuración Fija
-    epochs = 4000
+    epochs = 10000
     lbfgs_epochs = 0 # Apagamos L-BFGS de momento para iterar rápido con Adam
     num_layers = 6
     hidden_dim = 128
