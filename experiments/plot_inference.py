@@ -15,7 +15,7 @@ except Exception as e:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.models.pinn_model import CoastalPINNModel
 
-def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=100.0, resolution=200, run_name=""):
+def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=100.0, resolution=200, run_name="", num_layers=6, hidden_dim=128):
     """
     Genera predicciones en una malla 2D espaciotemporal continua utilizando la PINN entrenada,
     y visualiza el resultado para evaluar la reconstrucción física utilizando PyGMT (SOTA Mapping).
@@ -29,9 +29,9 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     if 'input_mean' in state_dict and 'input_std' in state_dict:
         input_mean = state_dict['input_mean'].cpu().numpy()
         input_std = state_dict['input_std'].cpu().numpy()
-        model = CoastalPINNModel(num_layers=4, hidden_dim=64, input_mean=input_mean, input_std=input_std).to(device)
+        model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=input_mean, input_std=input_std).to(device)
     else:
-        model = CoastalPINNModel(num_layers=4, hidden_dim=64).to(device)
+        model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim).to(device)
         
     model.load_state_dict(state_dict)
     model.eval()

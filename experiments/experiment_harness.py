@@ -410,7 +410,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
         print("Generando mapa de inferencia final para MLflow...")
         lat_bnds = [23.82, 32.75]
         lon_bnds = [-119.85, -111.92]
-        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200, run_name=run_name)
+        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200, run_name=run_name, num_layers=num_layers, hidden_dim=hidden_dim)
         mlflow.log_artifact(inference_file)
         
         print(f"Artefactos y métricas registradas en {tracking_uri if tracking_uri else mlruns_dir}")
