@@ -51,7 +51,9 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     
     print("Calculando predicciones de Clorofila-a (Inferencia continua)...")
     with torch.no_grad():
-        preds = model(X_tensor).cpu().numpy()
+        preds_log = model(X_tensor).cpu().numpy()
+        # Deshacemos la transformación logarítmica para graficar valores reales
+        preds = np.expm1(preds_log)
         
     # --- MÁSCARA GEOMÉTRICA (MAR DE CORTÉS) ---
     # Ecuación de la recta que bordea la costa este de la Península de Baja California.

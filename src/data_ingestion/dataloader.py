@@ -14,7 +14,7 @@ class CoastalPINNDataset(Dataset):
         from sklearn.model_selection import train_test_split
         
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-        self.csv_path = augmented_csv_path or os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
+        self.csv_path = augmented_csv_path or os.path.join(project_root, 'data/processed/imecocal_augmented_local.csv')
         
         print(f"Cargando dataset preprocesado desde: {self.csv_path}")
         if not os.path.exists(self.csv_path):
@@ -71,16 +71,18 @@ class CoastalPINNDataset(Dataset):
             self.df['wo'].fillna(0.0).values,
             self.df['bathy'].fillna(0.0).values,
             self.df['thetao'].fillna(15.0).values,
-            self.df['CHL_sat'].fillna(0.0).values
+            np.log1p(self.df['CHL_sat'].fillna(0.0).values) # Satelite tambien debe estar en log!
         ))
         
-        # y: (Clorofila)
-        y_numpy = self.df[['Clorofila']].values
+        # y: (Clorofila) - Aplicamos Transformación Logarítmica (log1p)
+        # Esto reduce el rango dinámico de [0.01 - 30.0] a [0 - 3.4], forzando a la red
+        # a aprender las texturas finas (remolinos) en vez de memorizar solo los blooms masivos.
+        y_numpy = np.log1p(self.df[['Clorofila']].values)
         
         self.X = torch.tensor(X_numpy, dtype=torch.float32)
         self.y = torch.tensor(y_numpy, dtype=torch.float32)
         
-        print(f"Tensores preparados: X shape {self.X.shape}, y shape {self.y.shape}")
+        print(f"Tensores preparados: X shape {self.X.shape}, y shape {self.y.shape} (Target en escala Logarítmica)")
 
     def __len__(self):
         return len(self.X)

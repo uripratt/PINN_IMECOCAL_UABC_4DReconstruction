@@ -32,10 +32,16 @@ class CoastalPhysicsPINN(nn.Module):
         if not X.requires_grad:
             X.requires_grad_(True)
             
-        C = model(X)
+        C_log = model(X)
+        # CLIPPING DE SEGURIDAD: Evitar que al inicio del entrenamiento valores locos causen Infs en expm1
+        C_log = torch.clamp(C_log, min=-1.0, max=5.0)
+        
+        # Deshacemos el logaritmo (expm1) para que el autograd y la PDE
+        # operen matemáticamente en el espacio real físico de la clorofila.
+        C_real = torch.expm1(C_log)
         
         dC_dX = torch.autograd.grad(
-            C, X, grad_outputs=torch.ones_like(C),
+            C_real, X, grad_outputs=torch.ones_like(C_real),
             create_graph=True, retain_graph=True
         )[0]
         
@@ -62,8 +68,8 @@ class CoastalPhysicsPINN(nn.Module):
         T_min = 10.0
         f_nutrients = torch.clamp((T_max - temperature) / (T_max - T_min), 0.0, 1.0)
         
-        growth = torch.abs(self.mu_max) * f_light * f_nutrients * C
-        mortality = torch.abs(self.m) * C
+        growth = torch.abs(self.mu_max) * f_light * f_nutrients * C_real
+        mortality = torch.abs(self.m) * C_real
         
         pde_residual = dC_dtime + advection - growth + mortality
         

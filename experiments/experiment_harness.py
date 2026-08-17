@@ -63,7 +63,7 @@ def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, devic
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
 # satellite batch is handled directly in the loop now
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=0.5, lbfgs_epochs=0, run_name="PINN_Training"):
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=10.0, lbfgs_epochs=0, num_layers=6, hidden_dim=128, run_name="PINN_Training"):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
@@ -103,7 +103,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     std_x = dataset_x.std(dim=0).numpy()
     print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
     
-    model = CoastalPINNModel(num_layers=4, hidden_dim=64, input_mean=mean_x, input_std=std_x).to(device)
+    model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=mean_x, input_std=std_x).to(device)
     # Pasamos el std_x a la física para corregir la dimensionalidad de las derivadas
     physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
     
@@ -118,8 +118,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             "colloc_ratio": colloc_ratio,
             "learning_rate": lr,
             "curriculum_epochs": curriculum_epochs,
-            "model_layers": 4,
-            "hidden_dim": 64
+            "lambda_sat": lambda_sat,
+            "model_layers": num_layers,
+            "hidden_dim": hidden_dim
         })
         
         history_data_loss = []
