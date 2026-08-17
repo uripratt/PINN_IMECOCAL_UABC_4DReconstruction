@@ -203,14 +203,14 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
             model.eval()
             epoch_test_loss = 0.0
             with torch.no_grad():
-                for test_x, test_y in test_loader:
+                for test_x, test_y in val_loader:
                     test_x = test_x.to(device)
                     test_y = test_y.to(device)
                     x_coords_test = test_x[:, 0:4]
                     pred_test = model(x_coords_test)
                     loss_test = mse_loss(pred_test, test_y)
                     epoch_test_loss += loss_test.item()
-            avg_test_loss = epoch_test_loss / len(test_loader)
+            avg_test_loss = epoch_test_loss / len(val_loader)
             
             # Early Stopping Check
             if avg_test_loss < best_test_loss:
@@ -339,14 +339,14 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 model.eval()
                 epoch_test_loss = 0.0
                 with torch.no_grad():
-                    for test_x, test_y in test_loader:
+                    for test_x, test_y in val_loader:
                         test_x = test_x.to(device)
                         test_y = test_y.to(device)
                         x_coords_test = test_x[:, 0:4]
                         pred_test = model(x_coords_test)
                         loss_test = mse_loss(pred_test, test_y)
                         epoch_test_loss += loss_test.item()
-                avg_test_loss = epoch_test_loss / len(test_loader)
+                avg_test_loss = epoch_test_loss / len(val_loader)
                 
                 # Early Stopping Check (L-BFGS)
                 if avg_test_loss < best_test_loss:
