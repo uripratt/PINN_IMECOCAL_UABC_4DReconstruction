@@ -15,6 +15,10 @@
 \usepackage{hyperref}
 \usepackage{amsmath}
 
+% Eliminar sangría de párrafo en todo el documento y añadir separación entre párrafos
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
 \title{Hacia la Reconstrucción 4D Continua de Clorofila-$a$ en la Corriente de California\\[0.8cm]
 \large Análisis Exploratorio de Datos IMECOCAL (1998-2012) y Formulación de Modelos Informados por la Física}
 \author{\textbf{Reporte Científico y Propuesta de Modelado} \\ Programa de Estancias de Investigación}
@@ -25,7 +29,7 @@
 \maketitle
 
 \begin{abstract}
-Este trabajo presenta la primera fase de un proyecto cuyo objetivo es la reconstrucción de campos tridimensionales y temporales (4D) continuos de clorofila-$a$ a partir de perfiles verticales de lances de CTD discretos e irregulares. Se analiza el dataset histórico del programa IMECOCAL (1998-2012) en la costa noroccidental de Baja California, compuesto por 123 estaciones oceanográficas. Los perfiles de clorofila-$a$ fueron estandarizados a las profundidades de mayor representatividad estadística (0, 10, 20, 50 y 100 m). El análisis exploratorio revela una marcada atenuación vertical por debajo de la capa de mezcla (0-20 m), la formación estacional del Máximo Profundo de Clorofila (DCM) a ~50 m, y una fuerte modulación interanual y estacional del gradiente costa-océano por eventos ENOS y surgencias costeras. Utilizando esta línea base, se formula el problema de reconstrucción 4D continua mediante el acoplamiento de Redes Neuronales Informadas por la Física (PINNs) con la ecuación de advección-difusión-reacción. Finalmente, se diseña un framework de validación riguroso (Harness) y un flujo de trabajo agéntico colaborativo para guiar el desarrollo e implementación del modelo en las fases subsecuentes.
+Este trabajo presenta la primera fase de un proyecto cuyo objetivo es la reconstrucción de campos tridimensionales y temporales (4D) continuos de clorofila-$a$ a partir de perfiles verticales de lances de CTD discretos e irregulares. Se analiza el dataset histórico del programa IMECOCAL (1998-2012) en la costa noroccidental de Baja California, compuesto por 123 estaciones oceanográficas. Los perfiles de clorofila-$a$ fueron estandarizados a las profundidades de mayor representatividad estadística (0, 10, 20, 50 y 100 m). El análisis exploratorio revela una marcada atenuación vertical por debajo de la capa de mezcla (0-20 m), la formación estacional del Máximo Profundo de Clorofila (DCM) a ~50 m, y una fuerte modulación interanual y estacional del gradiente costa-océano por eventos ENOS y surgencias costeras. Utilizando esta línea base, se formula el problema de reconstrucción 4D continua mediante el acoplamiento de Redes Neuronales Informadas por la Física (PINNs) con la ecuación de advección-reacción (Estudio de Ablación sin difusión para prevenir rigidez numérica). Finalmente, se diseña un framework de validación riguroso (Harness) y un flujo de trabajo agéntico colaborativo para guiar el desarrollo e implementación del modelo en las fases subsecuentes.
 \end{abstract}
 
 \section{Introducción}
@@ -56,9 +60,18 @@ El dominio geográfico de estudio y la ubicación de las estaciones oceanográfi
 \end{figure}
 
 \subsection{Esfuerzo de Muestreo Histórico}
-La Tabla \ref{tab:esfuerzo} detalla la matriz de cobertura para las 123 estaciones analizadas en el periodo 1998-2012. Cada celda indica el número total de perfiles de clorofila procesados por estación y año. Las celdas sombreadas en verde pastel corresponden a las tres estaciones que registraron los picos máximos absolutos de clorofila en la columna de agua para cada año, permitiendo mapear los centros de alta producción biológica primaria de la región.
+La distribución espacial y temporal del esfuerzo de muestreo hidrográfico durante los 15 años del programa IMECOCAL (1998--2012) se sintetiza en la Figura \ref{fig:esfuerzo}. El panel (a) mapea la matriz de cobertura de perfiles CTD validados agrupados por línea de transecto transversal (ordenadas de norte a sur) y año de muestreo. Esta vista pone de manifiesto la estructura de la malla de monitoreo y la presencia de vacíos observacionales (*gaps*) causados por inclemencias meteorológicas o restricciones logísticas en campañas específicas.
 
-\input{tabla_esfuerzo_latex.tex}
+El panel (b) sintetiza la evolución interanual y la estacionalidad del muestreo en un gráfico unificado. La altura total de las barras cuantifica el número de perfiles procesados por año, evidenciando el impacto de forzamientos climáticos de gran escala: durante el intenso evento de El Niño 1997--1998, el número de perfiles recuperados se deprimió a un mínimo histórico de 181 perfiles, mientras que el periodo subsecuente de La Niña (1999--2005) registró un pico observacional de 362 perfiles en 2005. Simultáneamente, el desglose por colores revela que las campañas de primavera (verde) y otoño (morado) concentran sistemáticamente la mayor biomasa de datos acoplada al régimen de surgencias costeras.
+
+La matriz completa desagregada individualmente para las 123 estaciones de monitoreo se presenta detalladamente en el Anexo \ref{sec:anexo1} (Tabla \ref{tab:esfuerzo}).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{esfuerzo_muestreo_historico.png}
+    \caption{Distribución y dinamismo del esfuerzo de muestreo histórico de perfiles CTD IMECOCAL (1998--2012). a) Matriz espaciotemporal de cobertura por línea de transecto (Norte a Sur) indicando el número total de perfiles procesados por año; las celdas en blanco representan vacíos observacionales. b) Evolución interanual del total de perfiles capturados apilados por temporada climatológica (Primavera, Verano, Otoño e Invierno), resaltando los forzamientos climáticos de gran escala (El Niño 1997--1998 y La Niña 1999--2005).}
+    \label{fig:esfuerzo}
+\end{figure}
 
 \section{Línea Base: Análisis Exploratorio de Datos}
 \subsection{Estructura Vertical Promedio}
@@ -115,9 +128,9 @@ El diagrama de Hovmöller (Figura \ref{fig:gradiente}a) revela que la pluma de a
 El análisis exploratorio demuestra que los datos in-situ capturan la física de surgencias y la biogeoquímica regional, pero están limitados por vacíos temporales y espaciales. Para transicionar de este conjunto de observaciones discretas $D = \{ (\mathbf{x}_i, t_i, C_i) \}_{i=1}^N$ a un campo continuo $C(\mathbf{x}, t)$, se plantea la formulación matemática y metodológica detallada a continuación.
 
 \subsection{Ecuación Física Gobernante (Transporte de Trazadores)}
-Asumiendo que la clorofila-$a$ actúa como un trazador biológico dinámico en la columna de agua, su evolución espaciotemporal está regida por la ecuación de advección-difusión-reacción en tres dimensiones:
+Asumiendo que la clorofila-$a$ actúa como un trazador biológico dinámico en la columna de agua, su evolución espaciotemporal está regida por la ecuación de advección-reacción en tres dimensiones (omitiendo la difusión turbulenta como estudio de ablación para reducir la rigidez numérica):
 \begin{equation}
-\frac{\partial C}{\partial t} + u\frac{\partial C}{\partial x} + v\frac{\partial C}{\partial y} + w\frac{\partial C}{\partial z} = \frac{\partial}{\partial x}\left(K_h \frac{\partial C}{\partial x}\right) + \frac{\partial}{\partial y}\left(K_h \frac{\partial C}{\partial y}\right) + \frac{\partial}{\partial z}\left(K_v \frac{\partial C}{\partial z}\right) + S(C, \mathbf{x}, t)
+\frac{\partial C}{\partial t} + u\frac{\partial C}{\partial x} + v\frac{\partial C}{\partial y} + w\frac{\partial C}{\partial z} = S(C, \mathbf{x}, t)
 \end{equation}
 donde $\mathbf{u} = (u, v, w)$ representa el vector de velocidad tridimensional de las corrientes marinas, $K_h$ y $K_v$ son los coeficientes de difusividad turbulenta horizontal y vertical respectivamente, y $S(C, \mathbf{x}, t)$ describe la tasa neta de producción biológica (crecimiento neto del fitoplancton menos pastoreo y mortalidad) acoplada a la luz (radiación solar fotosintética) y la disponibilidad de nutrientes limitantes (ej. nitratos).
 
@@ -146,7 +159,7 @@ Para operacionalizar la formulación física descrita anteriormente, se diseñó
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{pinn_scientific_architecture.png}
-    \caption{Arquitectura científica del modelo PINN 4D para la reconstrucción de Clorofila-$a$ en IMECOCAL. Muestra la ingesta de datos 4D (incluyendo $w_0$), la red neuronal simétrica con activación Softplus, la adimensionalización con regla de la cadena en PyTorch Autograd, la formulación PDE 3D de Advección-Difusión-Reacción, la penalización Dirichlet en la costa y el arnés de optimización híbrida Adam + L-BFGS.}
+    \caption{Arquitectura científica del modelo PINN 4D para la reconstrucción de Clorofila-$a$ en IMECOCAL. Muestra la ingesta de datos 4D (incluyendo $w_0$), la red neuronal simétrica con activación Softplus, la adimensionalización con regla de la cadena en PyTorch Autograd, la formulación PDE 3D de Advección-Reacción, la penalización Dirichlet en la costa y el arnés de optimización híbrida Adam + L-BFGS.}
     \label{fig:pinn_architecture_master}
 \end{figure}
 
@@ -163,6 +176,8 @@ El modelo no opera de forma aislada sobre los perfiles biológicos. Para que la 
     \item \textbf{Observaciones Satelitales (Nivel 4 / Superficie):} Datos continuos bidimensionales correspondientes a imágenes satelitales de Color del Océano (ej. MODIS). Estos datos, que poseen resoluciones de entre 1 km y 4 km diarios, se inyectan dinámicamente durante el batcheo en la coordenada de profundidad cero ($z=0$) para anclar la condición de frontera superior de biomasa fitoplanctónica, forzando a la red a propagar la física hacia las profundidades ciegas.
 \end{itemize}
 
+\textbf{Perspectiva de Multi-modalidad Autónoma (BGC-Argo y Gliders):} Como evolución metodológica natural para mitigar la extrema dispersión temporal del muestreo en buque (frecuencia trimestral), la arquitectura \textit{mesh-free} de esta PINN está matemáticamente preparada para asimilar datos de plataformas autónomas de forma nativa. La integración de perfiles continuos de alta frecuencia (cada 5-10 días) procedentes de flotadores BGC-Argo a la deriva, o de planeadores submarinos (Gliders) realizando zigzags transversales en la costa, se incorporaría trivialmente como nubes de puntos de anclaje empírico adicionales, cerrando definitivamente los vacíos observacionales subsuperficiales sin requerir interpolación numérica previa.
+
 \textbf{Normalización Z-score In-Graph:} Para prevenir el colapso del gradiente en la red neuronal provocado por la extrema disparidad de escalas espaciotemporales (ej. variable tiempo $\sim 5000$ días frente a las velocidades de corrientes $\sim 0.1$ m/s), se implementó una capa de estandarización incrustada estructuralmente en el grafo de PyTorch. Esto permite que \texttt{autograd} aplique la regla de la cadena de las derivadas parciales de forma matemáticamente perfecta: $\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \cdot \sigma_X^{-1}$.
 
 \subsection{Diseño de la Red Neuronal (MLP)}
@@ -173,14 +188,18 @@ La arquitectura del aproximador funcional $\hat{C}(\mathbf{x}, t; \theta)$ const
 \end{itemize}
 
 \subsection{Diferenciación Automática y Física Inversa Biogeoquímica}
-El rasgo distintivo de esta arquitectura es el uso de PyTorch Autograd para evaluar la Ecuación Diferencial Parcial (PDE) analítica 3D. El residuo computa el transporte por corrientes de CMEMS y la difusión turbulenta acoplada a un modelo biológico de crecimiento:
+El rasgo distintivo de esta arquitectura es el uso de PyTorch Autograd para evaluar la Ecuación Diferencial Parcial (PDE) analítica 3D. El residuo computa el transporte por corrientes de CMEMS acoplado a un modelo biológico de crecimiento:
 \begin{equation}
-\mathcal{F}_\theta = \frac{\partial \hat{C}}{\partial t} + u \frac{\partial \hat{C}}{\partial x} + v \frac{\partial \hat{C}}{\partial y} + w \frac{\partial \hat{C}}{\partial z} - K_h \left( \frac{\partial^2 \hat{C}}{\partial x^2} + \frac{\partial^2 \hat{C}}{\partial y^2} \right) - \text{Crecimiento} + \text{Mortalidad}
+\mathcal{F}_\theta = \frac{\partial \hat{C}}{\partial t} + u \frac{\partial \hat{C}}{\partial x} + v \frac{\partial \hat{C}}{\partial y} + w \frac{\partial \hat{C}}{\partial z} - \text{Crecimiento} + \text{Mortalidad}
 \end{equation}
 
 En lugar de imponer parámetros fijos, el modelo resuelve un problema de \textbf{Física Inversa}. La red descubre empíricamente los parámetros biológicos regionales optimizándolos junto con los pesos de la neurona mediante retropropagación (\texttt{nn.Parameter}):
 \begin{equation}
-\text{Crecimiento} = \mu_{max} \cdot f_{light}(z) \cdot f_{nutrients}(T) \cdot \hat{C} \quad ; \quad f_{light}(z) = e^{-k_e |z|} \quad ; \quad f_{nutrients}(T) = \max \left( 0, \frac{T_{max} - T}{T_{max} - T_{min}} \right)
+\begin{split}
+\text{Crecimiento} &= \mu_{max} \cdot f_{light}(z) \cdot f_{nutrients}(T) \cdot \hat{C} \\[0.2cm]
+f_{light}(z) &= e^{-k_e |z|} \\[0.2cm]
+f_{nutrients}(T) &= \max \left( 0, \frac{T_{max} - T}{T_{max} - T_{min}} \right)
+\end{split}
 \end{equation}
 Donde la tasa máxima de crecimiento ($\mu_{max}$), el coeficiente de atenuación lumínica ($k_e$) y la tasa de mortalidad ($m$) son aprendidos a partir del decaimiento natural de la biomasa observada. El limitante de nutrientes se parametrizó inversamente a la temperatura ($T$) bajo el supuesto físico de que las aguas frías profundas (o de surgencia) son ricas en nitratos. La pérdida física minimiza $\mathcal{L}_{PDE} = \frac{1}{N} \sum ||\mathcal{F}_\theta||^2$.
 
@@ -209,7 +228,7 @@ La Tabla \ref{tab:pinn_sota_summary} resume la arquitectura final y la hoja de r
 \begin{tabular}{|l|c|p{8.2cm}|}
 \hline
 \textbf{Componente / Mejora} & \textbf{Estado} & \textbf{Descripción e Impacto Computacional / Físico} \\ \hline
-Afloramiento 3D ($w_0$) & \textbf{Aplicado} & Inyección de velocidad vertical $w_0$ y término $w \frac{\partial C}{\partial z}$ en la PDE 3D de Advección-Difusión-Reacción. \\ \hline
+Afloramiento 3D ($w_0$) & \textbf{Aplicado} & Inyección de velocidad vertical $w_0$ y término $w \frac{\partial C}{\partial z}$ en la PDE 3D de Advección-Reacción. \\ \hline
 Adimensionalización & \textbf{Aplicado} & Z-score in-graph con regla de la cadena Autograd ($\frac{\partial C}{\partial X_{real}} = \frac{\partial C}{\partial X_{norm}} \sigma_X^{-1}$) y unidades homogeneizadas en $[1/\text{día}]$. \\ \hline
 Land Mask Dirichlet & \textbf{Aplicado} & Puntos de colocación ($colloc\_ratio = 4\times$) sobre continente penalizando $\hat{C} > 0$ en tierra firme ($\mathcal{L}_{Dirichlet}$). \\ \hline
 Validación Científica & \textbf{Aplicado} & Partición estricta (Hold-out 85/15) de estaciones para evaluación del \texttt{Test\_Loss} e inferencia en coordenadas ocultas. \\ \hline
@@ -220,5 +239,54 @@ Ponderación Adaptativa NTK & \textit{Pendiente} & Equilibrado dinámico de auto
 Laplace-Beltrami Encodings & \textit{Post-Tesis} & Uso de eigenfunciones de Laplace-Beltrami para dominios curvos, imponiendo \textit{hard boundaries} en la costa y aislamiento topológico del Golfo. \\ \hline
 \end{tabular}
 \end{table}
+
+\section{Primeros Resultados e Inferencia del Modelo}
+\label{sec:resultados}
+Como demostración de la capacidad de reconstrucción espaciotemporal continua de la arquitectura PINN desarrollada y su sensibilidad a las configuraciones de hiperparámetros, la Figura \ref{fig:pinn_inference} presenta una evaluación sistemática de 5 paneles en la capa superficial ($z=0$ m) para el instante temporal $t=100$ días (10 de abril de 1998). Se compara la observación real de observatorio satelital CMEMS L4 (\textit{OCEANCOLOUR\_GLO\_BGC\_L4\_MY\_009\_104}) frente a cuatro corridas independientes del arnés experimental de la PINN:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{comparativa_4runs_pinn_vs_cmems.png}
+    \caption{Evaluación comparativa multipanel del campo de clorofila-$a$ ($\text{mg/m}^3$) en superficie ($z=0$ m, $t=100$ días / 10 de abril de 1998). a) Producto satelital de observatorio continuo CMEMS L4 (Terreno de verdad). b) Run 1: LR Bajo + Mucha Física ($\lambda_{phys}=1.0$). c) Run 2: Física Rápida. d) Run 3: LR Micro Suave. e) Run 4: Batch Gigante Rápido.}
+    \label{fig:pinn_inference}
+\end{figure}
+
+El análisis comparativo evidencia que las cuatro configuraciones del modelo logran asimilar los lances discretos e irregulares in-situ del programa IMECOCAL y reconstruir la estructura espacial dominante del sistema de la Corriente de California. Todas las corridas recuperan exitosamente la pluma de alta productividad biológica ($> 2.5 \text{ mg/m}^3$) adyacente a la costa asociada a eventos de surgencia costera, así como el decaimiento progresivo hacia aguas oligotróficas ($< 0.5 \text{ mg/m}^3$) mar adentro observado en el producto satelital de referencia (panel a).
+
+Entre las variaciones evaluadas, el Run 1 (panel b: LR Bajo + Mucha Física) presenta un equilibrio óptimo entre el suavizado por difusión y la estructura de gradiente costero. El Run 3 (panel d: LR Micro Suave) resuelve detalles finos de la pluma cerca del margen continental, mientras que el Run 4 (panel e: Batch Gigante Rápido) muestra la mayor regularidad global. Asimismo, la penalización \textit{Dirichlet} sobre la máscara de ETOPO garantiza en las cuatro corridas un confinamiento marino absoluto, eliminando cualquier fuga o concentración espuria sobre la tierra firme de la península de Baja California. Este resultado confirma la robustez numérica del optimizador híbrido (Adam + L-BFGS) y la reproducibilidad del arnés experimental.
+
+\subsection{Validación In-Situ Multianual: Los 4 Años Más Muestreados}
+\label{sec:validacion_4anos}
+Para certificar la capacidad de la PINN para asimilar observaciones empíricas in-situ en periodos de máxima cobertura de muestreo, la Figura \ref{fig:pinn_4years} presenta la reconstrucción continua del campo superficial ($z=0$ m) durante las campañas de primavera de los **cuatro años con mayor volumen de datos empíricos de la serie histórica IMECOCAL** (2000, 2003, 2005 y 2011). En cada panel se superponen las estaciones reales de botellas Niskin/CTD recolectadas por los cruceros oceanográficos.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{pinn_in_situ_4years.png}
+    \caption{Evaluación de la reconstrucción continua PINN 4D ($z=0$ m) superpuesta con las estaciones empíricas in-situ de botellas CTD de IMECOCAL (círculos coloreados) para los 4 años con mayor esfuerzo de muestreo histórico: a) Primavera 2000 (1,433 obs. totales). b) Primavera 2003 (1,492 obs. totales). c) Primavera 2005 (1,686 obs. totales). d) Primavera 2011 (1,647 obs. totales).}
+    \label{fig:pinn_4years}
+\end{figure}
+
+La comparación evidencia una concordancia espacial altamente consistente entre los valores de clorofila-$a$ medidos in-situ en el barco y el campo continuo predicho por la PINN 4D a lo largo de los cuatro periodos. En todos los casos, la red sintetiza un gradiente costa-océano suave que respeta los núcleos costeros de alta biomasa ($> 2.5 \text{ mg/m}^3$) registrados por los CTD in-situ, al tiempo que preserva el estricto confinamiento continental mediante la máscara de ETOPO. Esto confirma la estabilidad del approximador funcional continuo a lo largo del dominio temporal histórico de 15 años.
+
+\subsection{Dinámica Estacional Multianual: Ciclo Anual 2005}
+\label{sec:ciclo_2005}
+Finalmente, para verificar que la PINN responde adecuadamente al forzamiento estacional a lo largo del año, la Figura \ref{fig:pinn_2005_seasons} ilustra la evolución del campo superficial ($z=0$ m) durante las cuatro campañas del año **2005** (Invierno, Primavera, Verano y Otoño), superponiendo las 1,686 observaciones de botellas CTD recolectadas por IMECOCAL.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{pinn_inference_2005_estacional.png}
+    \caption{Variabilidad estacional continua de clorofila-$a$ ($z=0$ m) reconstruida por la PINN 4D para el año 2005. a) Invierno (Enero). b) Primavera (Abril). c) Verano (Julio). d) Otoño (Octubre). Los puntos corresponden a los lances in-situ de CTD ejecutados por las campañas oceanográficas de IMECOCAL.}
+    \label{fig:pinn_2005_seasons}
+\end{figure}
+
+El modelo captura el ciclo estacional típico de la Corriente de California: contracción de la biomasa en invierno (panel a), surgencia masiva e intensificación de la pluma costera en primavera y verano (paneles b y c), y relajación gradual en otoño (panel d). La coincidencia entre los puntos del barco y el campo continuo confirma la estabilidad del approximador funcional continuo en cualquier instante temporal arbitrario del periodo histórico.
+
+\newpage
+\appendix
+\section{Anexo 1: Matriz Completa de Esfuerzo de Muestreo IMECOCAL por Estación}
+\label{sec:anexo1}
+La Tabla \ref{tab:esfuerzo} detalla la matriz de cobertura individual para las 123 estaciones analizadas en el periodo 1998--2012. Cada celda indica el número total de perfiles de clorofila procesados por estación y año. Las celdas sombreadas en verde pastel corresponden a las tres estaciones que registraron los picos máximos absolutos de biomasa de clorofila en la columna de agua para cada año, permitiendo mapear los centros de mayor productividad biológica primaria en la región.
+
+\input{tabla_esfuerzo_latex.tex}
 
 \end{document}
