@@ -20,28 +20,37 @@ def run_golden_training():
     epochs_adam = 3000
     epochs_lbfgs = 500
     
-    run_name = "Golden_PINN_MF_LOCO"
+    # 2. Batería de 4 Configuraciones
+    sweep_config = [
+        {"run_name": "Gold_Sat_Fuerte", "lambda_sat": 15.0, "lr": 5e-4},
+        {"run_name": "Gold_Sat_Medio", "lambda_sat": 5.0, "lr": 5e-4},
+        {"run_name": "Gold_Sat_Fuerte_LRLento", "lambda_sat": 15.0, "lr": 1e-4},
+        {"run_name": "Gold_Sat_Medio_LRLento", "lambda_sat": 5.0, "lr": 1e-4}
+    ]
     
-    print(f"\n🚀 Lanzando Experimento Definitivo: {run_name}")
-    print(f"   -> Adam Epochs: {epochs_adam} | L-BFGS Epochs: {epochs_lbfgs}")
-    print(f"   -> lambda_sat: 15.0 (Sat_Fuerte ha demostrado ser el mejor regulador)")
+    total_runs = len(sweep_config)
     
-    try:
-        train_pinn(
-            epochs=epochs_adam,
-            batch_size=2048,
-            lr=5e-4,
-            curriculum_epochs=2000,
-            colloc_ratio=4,
-            lambda_sat=15.0, # Según nuestro análisis, Sat_Fuerte ganó
-            lbfgs_epochs=epochs_lbfgs,
-            num_layers=num_layers,
-            hidden_dim=hidden_dim,
-            run_name=run_name
-        )
-        print(f"✅ Experimento {run_name} finalizado con éxito.")
-    except Exception as e:
-        print(f"❌ Error en {run_name}: {str(e)}")
+    for i, config in enumerate(sweep_config):
+        print(f"\n[{i+1}/{total_runs}] 🚀 Lanzando Experimento: {config['run_name']}")
+        print(f"   -> Adam Epochs: {epochs_adam} | L-BFGS Epochs: {epochs_lbfgs}")
+        print(f"   -> lambda_sat: {config['lambda_sat']} | lr: {config['lr']}")
+        
+        try:
+            train_pinn(
+                epochs=epochs_adam,
+                batch_size=2048,
+                lr=config['lr'],
+                curriculum_epochs=2000,
+                colloc_ratio=4,
+                lambda_sat=config['lambda_sat'],
+                lbfgs_epochs=epochs_lbfgs,
+                num_layers=num_layers,
+                hidden_dim=hidden_dim,
+                run_name=config['run_name']
+            )
+            print(f"✅ Experimento {config['run_name']} finalizado con éxito.")
+        except Exception as e:
+            print(f"❌ Error en {config['run_name']}: {str(e)}")
 
 if __name__ == "__main__":
     run_golden_training()
