@@ -88,7 +88,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     train_loader, val_loader = get_dataloaders(batch_size=batch_size)
     
     max_time_days = train_loader.dataset.df['time_days'].max()
-    max_depth = train_loader.dataset.df['Profundidad'].max()
+    max_depth = train_loader.dataset.df['Depth'].max()
     
     print("Cargando malla de tierra para Puntos de Colocación...")
     land_data = load_land_points()
@@ -163,10 +163,20 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 
                 optimizer.zero_grad()
                 
-                # --- DATA LOSS (Solo empíricos) ---
+                # --- DATA LOSS (Multi-Fidelity: Botellas y CTD) ---
                 x_coords_data = batch_x_full[:, 0:4].to(device)
                 pred_y = model(x_coords_data)
-                loss_data = mse_loss(pred_y, batch_y)
+                
+                y_ctd = batch_y[:, 0].unsqueeze(1)
+                y_bottle = batch_y[:, 1].unsqueeze(1)
+                mask_ctd = batch_y[:, 2].unsqueeze(1)
+                mask_bottle = batch_y[:, 3].unsqueeze(1)
+                
+                loss_ctd = torch.sum(mask_ctd * (pred_y - y_ctd)**2) / (torch.sum(mask_ctd) + 1e-8)
+                loss_bottle = torch.sum(mask_bottle * (pred_y - y_bottle)**2) / (torch.sum(mask_bottle) + 1e-8)
+                
+                # Multi-Fidelity Loss (Bottles weight > CTD weight)
+                loss_data = 1.0 * loss_bottle + 0.2 * loss_ctd
                 
                 # --- PHYSICS LOSS (Empíricos + Tierra firme) ---
                 loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
@@ -208,7 +218,16 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     val_y = val_y.to(device)
                     x_coords_val = val_x[:, 0:4]
                     pred_val = model(x_coords_val)
-                    loss_val = mse_loss(pred_val, val_y)
+                    
+                    y_ctd_val = val_y[:, 0].unsqueeze(1)
+                    y_bottle_val = val_y[:, 1].unsqueeze(1)
+                    mask_ctd_val = val_y[:, 2].unsqueeze(1)
+                    mask_bottle_val = val_y[:, 3].unsqueeze(1)
+                    
+                    loss_ctd_val = torch.sum(mask_ctd_val * (pred_val - y_ctd_val)**2) / (torch.sum(mask_ctd_val) + 1e-8)
+                    loss_bottle_val = torch.sum(mask_bottle_val * (pred_val - y_bottle_val)**2) / (torch.sum(mask_bottle_val) + 1e-8)
+                    loss_val = 1.0 * loss_bottle_val + 0.2 * loss_ctd_val
+                    
                     epoch_val_loss += loss_val.item()
             avg_val_loss = epoch_val_loss / len(val_loader)
             
@@ -279,7 +298,16 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     def closure():
                         optimizer_lbfgs.zero_grad()
                         pred_y = model(x_coords_data)
-                        loss_d = mse_loss(pred_y, batch_y)
+                        
+                        y_ctd = batch_y[:, 0].unsqueeze(1)
+                        y_bottle = batch_y[:, 1].unsqueeze(1)
+                        mask_ctd = batch_y[:, 2].unsqueeze(1)
+                        mask_bottle = batch_y[:, 3].unsqueeze(1)
+                        
+                        loss_ctd = torch.sum(mask_ctd * (pred_y - y_ctd)**2) / (torch.sum(mask_ctd) + 1e-8)
+                        loss_bottle = torch.sum(mask_bottle * (pred_y - y_bottle)**2) / (torch.sum(mask_bottle) + 1e-8)
+                        loss_d = 1.0 * loss_bottle + 0.2 * loss_ctd
+                        
                         loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
                         
                         chl_sat = batch_x_full[:, 9:10].to(device)
@@ -303,7 +331,14 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                     
                     with torch.no_grad():
                         pred_y = model(x_coords_data)
-                        l_data = mse_loss(pred_y, batch_y).item()
+                        
+                        y_ctd = batch_y[:, 0].unsqueeze(1)
+                        y_bottle = batch_y[:, 1].unsqueeze(1)
+                        mask_ctd = batch_y[:, 2].unsqueeze(1)
+                        mask_bottle = batch_y[:, 3].unsqueeze(1)
+                        loss_ctd = torch.sum(mask_ctd * (pred_y - y_ctd)**2) / (torch.sum(mask_ctd) + 1e-8)
+                        loss_bottle = torch.sum(mask_bottle * (pred_y - y_bottle)**2) / (torch.sum(mask_bottle) + 1e-8)
+                        l_data = (1.0 * loss_bottle + 0.2 * loss_ctd).item()
                         
                         chl_sat = batch_x_full[:, 9:10].to(device)
                         mask_sat = (chl_sat > 0.01).squeeze(1)
@@ -344,7 +379,15 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                         val_y = val_y.to(device)
                         x_coords_val = val_x[:, 0:4]
                         pred_val = model(x_coords_val)
-                        loss_val = mse_loss(pred_val, val_y)
+                        
+                        y_ctd_val = val_y[:, 0].unsqueeze(1)
+                        y_bottle_val = val_y[:, 1].unsqueeze(1)
+                        mask_ctd_val = val_y[:, 2].unsqueeze(1)
+                        mask_bottle_val = val_y[:, 3].unsqueeze(1)
+                        loss_ctd_val = torch.sum(mask_ctd_val * (pred_val - y_ctd_val)**2) / (torch.sum(mask_ctd_val) + 1e-8)
+                        loss_bottle_val = torch.sum(mask_bottle_val * (pred_val - y_bottle_val)**2) / (torch.sum(mask_bottle_val) + 1e-8)
+                        loss_val = 1.0 * loss_bottle_val + 0.2 * loss_ctd_val
+                        
                         epoch_val_loss += loss_val.item()
                 avg_val_loss = epoch_val_loss / len(val_loader)
                 
@@ -418,4 +461,4 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
 if __name__ == "__main__":
     # Entrenamiento Completo en Servidor (Fase Gold)
     # Incluye fase Adam + fase L-BFGS. lambda_sat se sube a 10.0.
-    train_pinn(epochs=3000, batch_size=1024, lr=1e-3, curriculum_epochs=2000, colloc_ratio=20, lambda_sat=10.0, lbfgs_epochs=500)
+    train_pinn(epochs=3000, batch_size=2048, lr=1e-3, curriculum_epochs=2000, colloc_ratio=4, lambda_sat=15.0, lbfgs_epochs=500)

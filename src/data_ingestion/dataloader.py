@@ -6,100 +6,100 @@ from torch.utils.data import Dataset, DataLoader
 
 class CoastalPINNDataset(Dataset):
     """
-    Dataset mesh-free para la red neuronal PINN.
-    Carga el dataset 'imecocal_augmented.csv' preprocesado que ya 
-    fusionó de forma segura la batimetría ETOPO y las velocidades CMEMS.
+    Dataset Multi-Fidelidad para la red neuronal PINN.
+    Carga el dataset 'imecocal_augmented.parquet'.
+    Implementa validación cruzada estricta oceánica: Leave-One-Cruise-Out (LOCO).
     """
-    def __init__(self, augmented_csv_path=None, split='train', test_size=0.15, random_state=42):
-        from sklearn.model_selection import train_test_split
-        
+    def __init__(self, augmented_path=None, split='train', test_cruise_year=2005, test_cruise_month=4):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-        self.csv_path = augmented_csv_path or os.path.join(project_root, 'data/processed/imecocal_augmented.csv')
+        self.data_path = augmented_path or os.path.join(project_root, 'data/processed/imecocal_augmented.parquet')
         
-        print(f"Cargando dataset preprocesado desde: {self.csv_path}")
-        if not os.path.exists(self.csv_path):
-            raise FileNotFoundError(f"No se encontró {self.csv_path}. Por favor ejecuta 'python src/data_ingestion/build_dataset.py' primero.")
+        print(f"Cargando dataset Multi-Fidelidad desde: {self.data_path}")
+        if not os.path.exists(self.data_path):
+            raise FileNotFoundError(f"No se encontró {self.data_path}. Ejecuta build_dataset.py primero.")
             
-        self.df = pd.read_csv(self.csv_path)
+        self.df = pd.read_parquet(self.data_path)
+        
+        # QC: Si hay Fecha = NaT, la tiramos
+        self.df = self.df.dropna(subset=['Fecha']).copy()
         self.df['Fecha'] = pd.to_datetime(self.df['Fecha'])
         
-        # Eliminar cualquier NaN restante por seguridad
-        self.df = self.df.dropna(subset=['Clorofila']).copy()
-        
-        # Definir t0 global antes del split para evitar desfases de tiempo entre train y test
+        # Global t0 for exact temporal matching between train and test
         self.t0 = self.df['Fecha'].min()
         
-        # SOTA: Profile Hold-out (Estrategia C - Ciegos Verticales)
-        # En vez de separar filas aleatorias (lo que causa data leakage), separamos perfiles CTD completos.
-        # Un perfil se define por una misma coordenada y fecha.
-        profiles = self.df[['Latitud', 'Longitud', 'Fecha']].drop_duplicates()
-        
-        train_profiles, test_profiles = train_test_split(profiles, test_size=test_size, random_state=random_state)
+        # STRICT LOCO SPLIT (Leave-One-Cruise-Out)
+        # Ocultamos la campaña definida por test_cruise_year y test_cruise_month
+        is_test_cruise = (self.df['Fecha'].dt.year == test_cruise_year) & (self.df['Fecha'].dt.month == test_cruise_month)
         
         if split == 'train':
-            self.df = self.df.merge(train_profiles, on=['Latitud', 'Longitud', 'Fecha'])
+            self.df = self.df[~is_test_cruise].copy()
+            print(f"Dataset TRAIN: Ocultando el crucero {test_cruise_year}-{test_cruise_month} (Filas: {len(self.df)})")
         elif split == 'test':
-            self.df = self.df.merge(test_profiles, on=['Latitud', 'Longitud', 'Fecha'])
+            self.df = self.df[is_test_cruise].copy()
+            print(f"Dataset TEST (LOCO): Usando SOLO el crucero {test_cruise_year}-{test_cruise_month} (Filas: {len(self.df)})")
         else:
-            raise ValueError("El parámetro 'split' debe ser 'train' o 'test'.")
+            raise ValueError("split debe ser 'train' o 'test'.")
             
-        # Ordenamos por fecha por si acaso
         self.df = self.df.sort_values('Fecha').reset_index(drop=True)
-        
         self._prepare_tensors()
         
     def _prepare_tensors(self):
-        """
-        Transforma el DataFrame limpio en tensores PyTorch.
-        """
-        # Convertir tiempo a un formato numérico (días desde el inicio global t0)
         self.df['time_days'] = (self.df['Fecha'] - self.t0).dt.total_seconds() / (24 * 3600)
         
-        # Si no existen nuevas variables, inicializamos dummy
-        if 'wo' not in self.df.columns: self.df['wo'] = 0.0
+        # Llenamos NaNs en covariables físicas
+        for col in ['uo', 'vo', 'wo', 'bathy', 'CHL_sat']:
+            if col not in self.df.columns:
+                self.df[col] = 0.0
+            else:
+                self.df[col] = self.df[col].fillna(0.0)
+                
         if 'thetao' not in self.df.columns: self.df['thetao'] = 15.0
-        if 'CHL_sat' not in self.df.columns: self.df['CHL_sat'] = 0.0
+        else: self.df['thetao'] = self.df['thetao'].fillna(15.0)
             
         # X: (Lat, Lon, Depth, Time_days, u, v, w, bathy, temp, chl_sat)
         X_numpy = np.column_stack((
             self.df['Latitud'].values,
             self.df['Longitud'].values,
-            self.df['Profundidad'].values,
+            self.df['Depth'].values, # Now we use Depth instead of Profundidad
             self.df['time_days'].values,
-            self.df['uo'].fillna(0.0).values,
-            self.df['vo'].fillna(0.0).values,
-            self.df['wo'].fillna(0.0).values,
-            self.df['bathy'].fillna(0.0).values,
-            self.df['thetao'].fillna(15.0).values,
-            np.log1p(self.df['CHL_sat'].fillna(0.0).values) # Satelite tambien debe estar en log!
+            self.df['uo'].values,
+            self.df['vo'].values,
+            self.df['wo'].values,
+            self.df['bathy'].values,
+            self.df['thetao'].values,
+            np.log1p(self.df['CHL_sat'].values) # Satélite en Log
         ))
         
-        # y: (Clorofila) - Aplicamos Transformación Logarítmica (log1p)
-        # Esto reduce el rango dinámico de [0.01 - 30.0] a [0 - 3.4], forzando a la red
-        # a aprender las texturas finas (remolinos) en vez de memorizar solo los blooms masivos.
-        y_numpy = np.log1p(self.df[['Clorofila']].values)
+        # Multi-Fidelity Targets
+        # CTD (Low Fidelity) - Contínuo
+        chl_ctd = self.df['Chl_CTD'].values
+        mask_ctd = ~np.isnan(chl_ctd)
+        y_ctd = np.zeros_like(chl_ctd)
+        y_ctd[mask_ctd] = np.log1p(np.clip(chl_ctd[mask_ctd], 0, None))
+        
+        # Bottles (High Fidelity) - Discreto
+        chl_bottle = self.df['Chl_Bottle'].values
+        mask_bottle = ~np.isnan(chl_bottle)
+        y_bottle = np.zeros_like(chl_bottle)
+        y_bottle[mask_bottle] = np.log1p(np.clip(chl_bottle[mask_bottle], 0, None))
         
         self.X = torch.tensor(X_numpy, dtype=torch.float32)
+        
+        # y contains [CTD_value, Bottle_value, CTD_mask, Bottle_mask]
+        y_numpy = np.column_stack((y_ctd, y_bottle, mask_ctd.astype(float), mask_bottle.astype(float)))
         self.y = torch.tensor(y_numpy, dtype=torch.float32)
         
-        print(f"Tensores preparados: X shape {self.X.shape}, y shape {self.y.shape} (Target en escala Logarítmica)")
+        print(f"Tensores: X shape {self.X.shape}. y shape {self.y.shape} (CTD, Bottle, Mask_CTD, Mask_Bottle)")
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-            
-        sample_x = self.X[idx]
-        sample_y = self.y[idx]
-        
-        # Retornamos (X, y)
-        return sample_x, sample_y
+        return self.X[idx], self.y[idx]
 
-def get_dataloaders(batch_size=256, test_size=0.15, random_state=42):
-    train_dataset = CoastalPINNDataset(split='train', test_size=test_size, random_state=random_state)
-    test_dataset = CoastalPINNDataset(split='test', test_size=test_size, random_state=random_state)
+def get_dataloaders(batch_size=1024, test_cruise_year=2005, test_cruise_month=4):
+    train_dataset = CoastalPINNDataset(split='train', test_cruise_year=test_cruise_year, test_cruise_month=test_cruise_month)
+    test_dataset = CoastalPINNDataset(split='test', test_cruise_year=test_cruise_year, test_cruise_month=test_cruise_month)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -107,12 +107,9 @@ def get_dataloaders(batch_size=256, test_size=0.15, random_state=42):
     return train_loader, test_loader
 
 if __name__ == "__main__":
-    # Test rápido del Dataset
-    print("Probando instanciación del Dataset de la PINN...")
-    ds = CoastalPINNDataset()
-    
-    if len(ds) > 0:
-        x_sample, y_sample = ds[0]
-        print("\nEjemplo de Muestra 0:")
-        print(f"  Inputs (Lat, Lon, Prof, Tiempo_Dias, u, v, w, bathy, temp, chl_sat): {x_sample}")
-        print(f"  Target (Clorofila): {y_sample}")
+    print("Probando DataLoader Multi-Fidelidad LOCO...")
+    train_loader, test_loader = get_dataloaders(batch_size=10)
+    for x, y in train_loader:
+        print("X shape:", x.shape)
+        print("Y shape:", y.shape)
+        break

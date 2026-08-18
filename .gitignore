@@ -29,3 +29,4 @@ experiments/runs/
 .vscode/
 .idea/
 .ipynb_checkpoints/
+experiments/logs_Server/
