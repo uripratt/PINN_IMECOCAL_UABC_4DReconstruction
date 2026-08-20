@@ -20,12 +20,13 @@ def run_golden_training():
     epochs_adam = 3000
     epochs_lbfgs = 500
     
-    # 2. Batería de 4 Configuraciones
+    # 2. Batería de 4 Configuraciones (Optimizada para A100)
+    # Al subir el batch_size x32, debemos subir el LR proporcionalmente (Linear Scaling Rule)
     sweep_config = [
-        {"run_name": "Gold_Sat_Fuerte", "lambda_sat": 15.0, "lr": 5e-4},
-        {"run_name": "Gold_Sat_Medio", "lambda_sat": 5.0, "lr": 5e-4},
-        {"run_name": "Gold_Sat_Fuerte_LRLento", "lambda_sat": 15.0, "lr": 1e-4},
-        {"run_name": "Gold_Sat_Medio_LRLento", "lambda_sat": 5.0, "lr": 1e-4}
+        {"run_name": "Gold_Sat_Fuerte_A100", "lambda_sat": 15.0, "lr": 2e-3},
+        {"run_name": "Gold_Sat_Medio_A100", "lambda_sat": 5.0, "lr": 2e-3},
+        {"run_name": "Gold_Sat_Fuerte_LRLento_A100", "lambda_sat": 15.0, "lr": 1e-3},
+        {"run_name": "Gold_Sat_Medio_LRLento_A100", "lambda_sat": 5.0, "lr": 1e-3}
     ]
     
     total_runs = len(sweep_config)
@@ -38,7 +39,7 @@ def run_golden_training():
         try:
             train_pinn(
                 epochs=epochs_adam,
-                batch_size=2048,
+                batch_size=65536,
                 lr=config['lr'],
                 curriculum_epochs=2000,
                 colloc_ratio=4,
