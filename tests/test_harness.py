@@ -16,7 +16,9 @@ class TestCoastalPINN(unittest.TestCase):
     def setUp(self):
         # Crear modelo e instanciar la clase de pérdida física
         self.model = CoastalPINNModel(num_layers=3, hidden_dim=32)
-        self.physics = CoastalPhysicsPINN(diff_coef=0.1, decay_rate=0.01)
+        # decay_rate no es un argumento del constructor actual (la mortalidad
+        # `m` es un nn.Parameter interno, no se pasa desde fuera) -- eliminado.
+        self.physics = CoastalPhysicsPINN(diff_coef=0.1)
 
     def test_model_output_shape(self):
         """Verifica que el modelo devuelva el tensor de forma correcta."""
@@ -31,10 +33,13 @@ class TestCoastalPINN(unittest.TestCase):
         que preserve el grafo computacional (requiere gradientes para backprop).
         """
         dummy_x = torch.rand(10, 4, requires_grad=True)
-        # Velocidades u, v simuladas
-        dummy_u = torch.rand(10, 2)
-        
-        loss_p = self.physics.compute_physics_loss(self.model, dummy_x, dummy_u)
+        # Velocidades u, v, w simuladas (compute_physics_loss indexa las 3
+        # componentes: u_velocities[:, 0:1], [:, 1:2], [:, 2:3])
+        dummy_u = torch.rand(10, 3)
+        # Temperatura simulada -- argumento obligatorio de compute_physics_loss
+        dummy_temp = torch.rand(10, 1)
+
+        loss_p = self.physics.compute_physics_loss(self.model, dummy_x, dummy_u, dummy_temp)
         
         self.assertTrue(torch.is_tensor(loss_p), "La pérdida física debe ser un tensor")
         self.assertEqual(loss_p.dim(), 0, "La pérdida física debe ser un escalar (0 dim)")

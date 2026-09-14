@@ -69,10 +69,33 @@ class CoastalPhysicsPINN(nn.Module):
         pde_residual = dL_dtime + advection_log - source_log
         
         # --- MÁSCARA DE TIERRA ---
+        # Anula el residuo de la PDE en tierra (bathymetry>0): no tiene sentido
+        # exigir advección/difusión donde no hay agua. Esto NO impone que la
+        # predicción sea cero en tierra -- eso es la condición Dirichlet,
+        # calculada aparte en compute_dirichlet_loss() (antes no existía:
+        # los puntos de colocación en tierra se generaban y llegaban hasta
+        # aquí, pero el único efecto de bathymetry<=0 era anular su propio
+        # residuo, así que no aportaban nada a ninguna pérdida -- ver
+        # propuesta_integracion_datos_pinn.md, Sección 8.2, Bug A).
         if bathymetry is not None:
             land_mask = (bathymetry <= 0).float()
             pde_residual = pde_residual * land_mask
-            
+
         physics_loss = torch.mean(pde_residual ** 2)
-        
+
         return physics_loss
+
+    def compute_dirichlet_loss(self, model, X_land):
+        """
+        Condición de frontera Dirichlet: penaliza que la clorofila predicha
+        sea distinta de cero sobre tierra firme (X_land son puntos de
+        colocación con bathymetry>0, generados en experiment_harness.py).
+
+        Añadido 2026-09-03 (Fase 0 de propuesta_integracion_datos_pinn.md,
+        Bug A): antes no existía ningún término que usara estos puntos para
+        forzar C_tierra≈0 -- solo se anulaba su residuo de PDE, lo cual no es
+        lo mismo. La salida del modelo está en espacio log1p (L=log(C+1)),
+        así que penalizar L**2 ya empuja L→0, es decir C→0.
+        """
+        C_log_land = model(X_land)
+        return torch.mean(C_log_land ** 2)

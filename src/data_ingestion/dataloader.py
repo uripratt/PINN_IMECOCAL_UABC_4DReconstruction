@@ -55,7 +55,26 @@ class CoastalPINNDataset(Dataset):
                 
         if 'thetao' not in self.df.columns: self.df['thetao'] = 15.0
         else: self.df['thetao'] = self.df['thetao'].fillna(15.0)
-            
+
+        # Bias-corrección del satélite (Fase 0, 2026-09-03): el producto CMEMS
+        # L4 usado aquí comprime/satura la señal frente a in-situ -- medido en
+        # el match-up satélite-vs-in-situ (analysis_output/satellite_insitu_matchup.csv,
+        # N=9.189, r=0.57): log10(sat) = 0.3235*log10(insitu) - 0.4265. Se
+        # invierte esa curva para estimar la concentración "equivalente a
+        # in-situ" ANTES de usar el satélite como objetivo de frontera en
+        # z=0 (ver experiment_harness.py), en vez del valor crudo del
+        # satélite. Sin esto, el satélite se usaba tal cual, arrastrando su
+        # sesgo (sobreestima ~1.9x en aguas oligotróficas, subestima ~6x en
+        # blooms) directamente a la pérdida.
+        SAT_BIAS_SLOPE = 0.3235
+        SAT_BIAS_INTERCEPT = -0.4265
+        raw_sat = self.df['CHL_sat'].values
+        chl_sat_corrected = np.where(
+            raw_sat > 0,
+            10 ** ((np.log10(np.clip(raw_sat, 1e-6, None)) - SAT_BIAS_INTERCEPT) / SAT_BIAS_SLOPE),
+            0.0,
+        )
+
         # X: (Lat, Lon, Depth, Time_days, u, v, w, bathy, temp, chl_sat)
         X_numpy = np.column_stack((
             self.df['Latitud'].values,
@@ -67,7 +86,7 @@ class CoastalPINNDataset(Dataset):
             self.df['wo'].values,
             self.df['bathy'].values,
             self.df['thetao'].values,
-            np.log1p(self.df['CHL_sat'].values) # Satélite en Log
+            np.log1p(chl_sat_corrected) # Satélite bias-corregido, en Log
         ))
         
         # Multi-Fidelity Targets
@@ -82,14 +101,28 @@ class CoastalPINNDataset(Dataset):
         mask_bottle = ~np.isnan(chl_bottle)
         y_bottle = np.zeros_like(chl_bottle)
         y_bottle[mask_bottle] = np.log1p(np.clip(chl_bottle[mask_bottle], 0, None))
-        
+
+        # Peso por muestra (Fase 0, 2026-09-03): viene de la calibración jerárquica
+        # (analysis_output/chl_unified_v1.csv, columna peso_entrenamiento) --
+        # botella ~0.3-1.0, CTD ~0.3-0.8 según confianza real del punto/crucero.
+        # Sustituye los pesos fijos 1.0/0.2 que antes trataban a todos los puntos
+        # de una misma fuente por igual. fillna(1.0) es un valor de respaldo por
+        # si se usa un parquet antiguo sin esta columna.
+        if 'peso_entrenamiento' in self.df.columns:
+            weight = self.df['peso_entrenamiento'].fillna(1.0).values
+        else:
+            print("[Advertencia] 'peso_entrenamiento' no está en el parquet -- "
+                  "usando peso=1.0 para todas las muestras. Regenera con "
+                  "build_dataset.py actualizado para tener esto.")
+            weight = np.ones_like(chl_ctd)
+
         self.X = torch.tensor(X_numpy, dtype=torch.float32)
-        
-        # y contains [CTD_value, Bottle_value, CTD_mask, Bottle_mask]
-        y_numpy = np.column_stack((y_ctd, y_bottle, mask_ctd.astype(float), mask_bottle.astype(float)))
+
+        # y contains [CTD_value, Bottle_value, CTD_mask, Bottle_mask, weight]
+        y_numpy = np.column_stack((y_ctd, y_bottle, mask_ctd.astype(float), mask_bottle.astype(float), weight))
         self.y = torch.tensor(y_numpy, dtype=torch.float32)
         
-        print(f"Tensores: X shape {self.X.shape}. y shape {self.y.shape} (CTD, Bottle, Mask_CTD, Mask_Bottle)")
+        print(f"Tensores: X shape {self.X.shape}. y shape {self.y.shape} (CTD, Bottle, Mask_CTD, Mask_Bottle, Weight)")
 
     def __len__(self):
         return len(self.X)

@@ -22,11 +22,18 @@ def run_golden_training():
     
     # 2. Batería de 4 Configuraciones (Optimizada para A100)
     # Al subir el batch_size x32, debemos subir el LR proporcionalmente (Linear Scaling Rule)
+    #
+    # lambda_sat bajado de 15.0/5.0 a 1.0/0.5 (2026-09-03, Fase 0 de
+    # propuesta_integracion_datos_pinn.md, Sección 8/9): el match-up
+    # satélite-vs-in-situ midió r=0.57 (N=9.189) frente a r=0.81 del CTD
+    # calibrado -- el satélite es la fuente MENOS fiable de las tres, así que
+    # no debería pesar 75x más que el CTD como ocurría con lambda_sat=15.0
+    # vs. el peso 0.2 del CTD en el esquema anterior.
     sweep_config = [
-        {"run_name": "Gold_Sat_Fuerte_A100", "lambda_sat": 15.0, "lr": 2e-3},
-        {"run_name": "Gold_Sat_Medio_A100", "lambda_sat": 5.0, "lr": 2e-3},
-        {"run_name": "Gold_Sat_Fuerte_LRLento_A100", "lambda_sat": 15.0, "lr": 1e-3},
-        {"run_name": "Gold_Sat_Medio_LRLento_A100", "lambda_sat": 5.0, "lr": 1e-3}
+        {"run_name": "Gold_Sat_Medio_A100", "lambda_sat": 1.0, "lr": 2e-3},
+        {"run_name": "Gold_Sat_Bajo_A100", "lambda_sat": 0.5, "lr": 2e-3},
+        {"run_name": "Gold_Sat_Medio_LRLento_A100", "lambda_sat": 1.0, "lr": 1e-3},
+        {"run_name": "Gold_Sat_Bajo_LRLento_A100", "lambda_sat": 0.5, "lr": 1e-3}
     ]
     
     total_runs = len(sweep_config)
