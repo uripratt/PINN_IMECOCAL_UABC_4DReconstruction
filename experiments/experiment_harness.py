@@ -94,7 +94,8 @@ def compute_weighted_data_loss(pred_y, batch_y):
 
 
 # satellite batch is handled directly in the loop now
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=1.0, lambda_dirichlet=1.0, lbfgs_epochs=0, num_layers=6, hidden_dim=128, run_name="PINN_Training"):
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=1.0, lambda_dirichlet=1.0, lbfgs_epochs=0, num_layers=6, hidden_dim=128, run_name="PINN_Training",
+               use_fourier_features=False, fourier_mapping_size=64, fourier_scales=(3.0, 3.0, 1.0, 1.0)):
     """
     Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
     y registra experimentos y métricas en MLflow.
@@ -134,7 +135,9 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
     std_x = dataset_x.std(dim=0).numpy()
     print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
     
-    model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=mean_x, input_std=std_x).to(device)
+    model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=mean_x, input_std=std_x,
+                              use_fourier_features=use_fourier_features, fourier_mapping_size=fourier_mapping_size,
+                              fourier_scales=fourier_scales).to(device)
     # Pasamos el std_x a la física para corregir la dimensionalidad de las derivadas
     physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
     
