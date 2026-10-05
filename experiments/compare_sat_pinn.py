@@ -17,12 +17,7 @@ def evaluate_pinn_vs_sat():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
         _sd = torch.load(model_path, map_location=device)
-        # Auto-detecta si el checkpoint usa el embedding de Fourier (2026-09-14, pinn_model.py)
-        _use_fourier = 'fourier.B' in _sd
-        _fourier_size = _sd['fourier.B'].shape[1] if _use_fourier else 64
-        model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=np.zeros(4), input_std=np.ones(4),
-                                  use_fourier_features=_use_fourier, fourier_mapping_size=_fourier_size).to(device)
-        model.load_state_dict(_sd)
+        model = CoastalPINNModel.from_state_dict(_sd, num_layers=6, hidden_dim=128).to(device)
         model.eval()
     except Exception as e:
         print(f"Error cargando modelo: {e}")

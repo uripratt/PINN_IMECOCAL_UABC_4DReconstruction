@@ -1,101 +1,69 @@
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from experiments.experiment_harness import train_pinn
 
 """
-Batería de PRODUCCIÓN para el servidor A100 -- 2026-09-15.
+Batería para el servidor (GPU grande) -- rediseñada el 2026-09-25 tras la revisión
+de resultados (propuesta_integracion_datos_pinn.md, Secciones 10 y 11).
 
-Primera batería que entrena con el pipeline ya corregido en la Fase 0
-(commit 12ebd94: chl_unified_v1.csv calibrado, peso_entrenamiento real,
-Dirichlet real, lambda_sat corregido). Ninguno de los 41 runs anteriores
-en MLflow (incluidos los 8 "Gold_Sat_*"/"_A100" de agosto) usó este
-pipeline -- ver propuesta_integracion_datos_pinn.md, Sección 10.
+Antes de lanzar (en el servidor):
+    git pull origin main
+    python src/data_ingestion/compute_vertical_velocity_v2.py data/raw/cmems_yearly   # w corregida (v2)
+    python src/data_ingestion/build_dataset.py     # regenera parquet + ocean_colloc.parquet + tabla de cobertura
+  -> MIRAR la tabla "Cobertura REAL de forzantes por año": u,v,w,T deben estar ~1.0 en 1998-2012.
 
-Diseño de las 3 configuraciones, justificado por el diagnóstico de esa
-misma sección (no elegidas a ciegas):
+Uso:
+    python run_battery_a100.py screen            # cribado: 7 configuraciones en el fold A
+    python run_battery_a100.py folds S3_prior_seasonal S5_prior_seasonal_sinfisica   # confirmar en folds B y C
 
-- A100_AdamOnly_10k: reproduce el esquema que mejor generalizó en el
-  histórico (LogPINN_Sat_Medio_LRLento, Val_Loss mínimo 0.0894, Adam puro
-  10.000 épocas) -- ahora sobre datos calibrados. Es la referencia.
-- A100_AdamLBFGS_Golden: reproduce el esquema "Golden Run" (Adam 3.000 +
-  L-BFGS 500) que en agosto sobreajustó severamente (Val_Loss nunca bajó
-  de ~0.12-0.13 incluso en su mejor época) -- para aislar si ese
-  sobreajuste era por los datos sin calibrar (en cuyo caso debería
-  mejorar mucho aquí) o por el propio esquema de optimización (en cuyo
-  caso seguirá sobreajustando incluso con datos buenos).
-- A100_AdamOnly_Fourier_10k: A100_AdamOnly_10k + el nuevo embedding de
-  Fourier anisotrópico (src/models/pinn_model.py, use_fourier_features),
-  para probar si ataca el problema, ya diagnosticado por separado, de
-  pérdida de estructura de mesoescala en las reconstrucciones (Sección
-  "Resultados" del reporte, Gap 2).
-
-Antes de correr esto: regenerar imecocal_augmented.parquet con
-`python src/data_ingestion/build_dataset.py` (ya corregido en la Fase 0,
-pero el .parquet en disco del servidor puede seguir siendo el antiguo).
-
-Tiempo esperado: del orden de las ~3.6h que tomó cada run de 10.000
-épocas en el histórico (LogPINN_Sat_Medio_LRLento) -- unas ~11h para las
-3 configuraciones en serie. Ajustar batch_size/lr si la VRAM del servidor
-difiere del run que fijó estos valores (a2b9f28, "Optimizar batch size y
-LR para GPU A100").
+Protocolo: val elige checkpoint/para (patience); test se evalúa UNA vez con el modelo elegido; cada run
+registra baselines (media y climatología de train) y skill frente a ellos. Un modelo solo "funciona" si su
+skill_clim en TEST es > 0 de forma consistente en varios folds; elegir por val, reportar test.
 """
 
-BATCH_SIZE = 65536
-COLLOC_RATIO = 4
-NUM_LAYERS = 6
-HIDDEN_DIM = 128
-LR = 2e-3
-LAMBDA_SAT = 1.0
-LAMBDA_DIRICHLET = 1.0
-CURRICULUM_EPOCHS = 2000
-DATE_TAG = "20260915"
+BASE = dict(epochs=400, batch_size=65536, lr=2e-3, curriculum_epochs=100, colloc_ratio=0.5,
+            ocean_colloc_ratio=1.0, lambda_sat=1.0, lambda_dirichlet=1.0, lbfgs_epochs=0,
+            num_layers=6, hidden_dim=128, lr_schedule="cosine", patience=60)
 
-configs = [
-    {
-        "run_name": f"A100_AdamOnly_10k_{DATE_TAG}",
-        "epochs": 10000, "lbfgs_epochs": 0,
-        "use_fourier_features": False,
-    },
-    {
-        "run_name": f"A100_AdamLBFGS_Golden_{DATE_TAG}",
-        "epochs": 3000, "lbfgs_epochs": 500,
-        "use_fourier_features": False,
-    },
-    {
-        "run_name": f"A100_AdamOnly_Fourier_10k_{DATE_TAG}",
-        "epochs": 10000, "lbfgs_epochs": 0,
-        "use_fourier_features": True,
-    },
-]
+CONFIGS = {
+    # arquitectura histórica, pero con física corregida + protocolo nuevo (referencia)
+    "S0_base":                     dict(),
+    "S1_seasonal":                 dict(use_seasonal=True),
+    "S2_prior":                    dict(use_climatology_prior=True),
+    "S3_prior_seasonal":           dict(use_climatology_prior=True, use_seasonal=True),
+    "S4_prior_seasonal_fourier":   dict(use_climatology_prior=True, use_seasonal=True, use_fourier_features=True),
+    # ablaciones de la física: ¿aporta algo la PDE al val/test?
+    "S5_prior_seasonal_sinfisica": dict(use_climatology_prior=True, use_seasonal=True, lambda_phys_max=0.0),
+    "S6_prior_seasonal_fisica10":  dict(use_climatology_prior=True, use_seasonal=True, lambda_phys_max=10.0),
+}
+DATE_TAG = "20260925"
+
+
+def run(name, fold):
+    kw = {**BASE, **CONFIGS[name]}
+    run_name = f"{name}_fold{fold}_{DATE_TAG}"
+    print(f"\n{'='*70}\n {run_name}\n{'='*70}")
+    t0 = time.time()
+    try:
+        s = train_pinn(run_name=run_name, fold=fold, **kw)
+        print(f"OK {run_name} en {(time.time()-t0)/60:.1f} min | test skill_clim={s['test']['skill_clim']:+.3f}")
+    except Exception as e:
+        print(f"ERROR en {run_name}: {type(e).__name__}: {e}")
+
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print(" BATERÍA DE PRODUCCIÓN A100 (pipeline Fase 0, primera vez)")
-    print("=" * 60)
-    total = len(configs)
-    for i, cfg in enumerate(configs):
-        print(f"\n[{i+1}/{total}] 🚀 Lanzando: {cfg['run_name']}")
-        try:
-            train_pinn(
-                epochs=cfg["epochs"],
-                batch_size=BATCH_SIZE,
-                lr=LR,
-                curriculum_epochs=CURRICULUM_EPOCHS,
-                colloc_ratio=COLLOC_RATIO,
-                lambda_sat=LAMBDA_SAT,
-                lambda_dirichlet=LAMBDA_DIRICHLET,
-                lbfgs_epochs=cfg["lbfgs_epochs"],
-                num_layers=NUM_LAYERS,
-                hidden_dim=HIDDEN_DIM,
-                run_name=cfg["run_name"],
-                use_fourier_features=cfg["use_fourier_features"],
-            )
-            print(f"✅ {cfg['run_name']} finalizado con éxito.")
-        except Exception as e:
-            print(f"❌ Error en {cfg['run_name']}: {str(e)}")
-
-    print("\nBatería A100 completada. Comparar Val_Loss (mínimo por época,")
-    print("no solo el valor final) entre las 3 configuraciones en MLflow")
-    print("antes de elegir cuál usar como referencia de producción.")
+    mode = sys.argv[1] if len(sys.argv) > 1 else "screen"
+    if mode == "screen":
+        for name in CONFIGS:
+            run(name, "A")
+    elif mode == "folds":
+        names = sys.argv[2:] or ["S3_prior_seasonal"]
+        for name in names:
+            for fold in ("B", "C"):
+                run(name, fold)
+    else:
+        raise SystemExit("modo desconocido: usa 'screen' o 'folds <configs...>'")
+    print("\nHecho. Resumen: python summarize_results.py")

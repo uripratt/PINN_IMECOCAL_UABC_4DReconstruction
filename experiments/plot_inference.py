@@ -26,23 +26,9 @@ def plot_continuous_field(model_path, lat_range, lon_range, depth=0.0, time_day=
     # Cargar los pesos entrenados
     state_dict = torch.load(model_path, map_location=device)
 
-    # Detectar si el checkpoint se entrenó con el embedding de Fourier
-    # (2026-09-14, ver src/models/pinn_model.py) a partir del propio
-    # state_dict -- así no hace falta que quien llama a esta función sepa de
-    # antemano con qué arquitectura se entrenó cada .pth.
-    use_fourier_features = 'fourier.B' in state_dict
-    fourier_mapping_size = (state_dict['fourier.B'].shape[1] if use_fourier_features else 64)
-
-    if 'input_mean' in state_dict and 'input_std' in state_dict:
-        input_mean = state_dict['input_mean'].cpu().numpy()
-        input_std = state_dict['input_std'].cpu().numpy()
-        model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=input_mean, input_std=input_std,
-                                  use_fourier_features=use_fourier_features, fourier_mapping_size=fourier_mapping_size).to(device)
-    else:
-        model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim,
-                                  use_fourier_features=use_fourier_features, fourier_mapping_size=fourier_mapping_size).to(device)
-
-    model.load_state_dict(state_dict)
+    # La arquitectura exacta (fourier / estacional / prior climatológico) se reconstruye
+    # a partir de las propias claves del state_dict (ver CoastalPINNModel.from_state_dict).
+    model = CoastalPINNModel.from_state_dict(state_dict, num_layers=num_layers, hidden_dim=hidden_dim).to(device)
     model.eval()
 
     print(f"Generando malla de interpolación de {resolution}x{resolution} píxeles...")

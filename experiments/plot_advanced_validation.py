@@ -41,15 +41,7 @@ def generate_advanced_validation():
     # Usar el mejor modelo de la batería Log-Transformed
     model_path = "./experiments/logs_Server/log_error_17/pinn_model_LogPINN_Sat_Medio.pth"
     state_dict = torch.load(model_path, map_location=device, weights_only=False)
-    input_mean = state_dict['input_mean'].numpy()
-    input_std = state_dict['input_std'].numpy()
-    # Auto-detecta si el checkpoint usa el embedding de Fourier (2026-09-14, pinn_model.py)
-    use_fourier = 'fourier.B' in state_dict
-    fourier_size = state_dict['fourier.B'].shape[1] if use_fourier else 64
-
-    model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std,
-                              use_fourier_features=use_fourier, fourier_mapping_size=fourier_size)
-    model.load_state_dict(state_dict)
+    model = CoastalPINNModel.from_state_dict(state_dict, num_layers=6, hidden_dim=128)
     model.eval()
     
     # ---------------------------------------------------------

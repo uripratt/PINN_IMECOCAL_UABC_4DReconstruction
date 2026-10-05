@@ -1,21 +1,32 @@
 import os
 import sys
+import json
+import time
+import urllib.request
+import urllib.error
 import torch
 import torch.optim as optim
 import mlflow
 from tqdm import tqdm
 import numpy as np
+import pandas as pd
 import xarray as xr
 
-# Asegurar que se puede importar src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data_ingestion.dataloader import get_dataloaders
 from src.models.pinn_model import CoastalPINNModel
+from src.models.climatology import build_climatology_grid, ClimatologyPrior
 from src.physics.physics_loss import CoastalPhysicsPINN
 from experiments.plot_inference import plot_continuous_field
 import matplotlib.pyplot as plt
 
+LOG10_EPS = 0.01  # mg/m3: suelo para log10(Chl+eps) en las métricas en unidades físicas
+
+
+# ----------------------------------------------------------------------------
+# Puntos de colocación
+# ----------------------------------------------------------------------------
 def load_land_points():
     """Carga las coordenadas de tierra firme desde el archivo ETOPO."""
     bathy_file = os.path.join(os.path.dirname(__file__), '../data/raw/etopo_bathymetry.nc')
@@ -24,471 +35,425 @@ def load_land_points():
         return None
     ds = xr.open_dataset(bathy_file)
     var_name = 'altitude' if 'altitude' in ds else 'elevation'
-    lats = ds.latitude.values
-    lons = ds.longitude.values
-    Lon, Lat = np.meshgrid(lons, lats)
+    Lon, Lat = np.meshgrid(ds.longitude.values, ds.latitude.values)
     elev = ds[var_name].values
-    
     mask = elev > 0
-    land_lats = Lat[mask]
-    land_lons = Lon[mask]
-    land_elevs = elev[mask]
+    out = Lat[mask], Lon[mask], elev[mask]
     ds.close()
-    return land_lats, land_lons, land_elevs
+    return out
+
 
 def get_collocation_batch(land_data, batch_size, max_time_days, max_depth, device):
-    """Genera un batch de puntos aleatorios sobre tierra firme para imponer Dirichlet."""
+    """Puntos aleatorios sobre tierra firme (solo para la condición de Dirichlet C=0)."""
     land_lats, land_lons, land_elevs = land_data
-    
-    # Muestrear aleatoriamente 'batch_size' índices
     indices = np.random.choice(len(land_lats), batch_size, replace=True)
-    
-    batch_lats = land_lats[indices]
-    batch_lons = land_lons[indices]
-    batch_bathy = land_elevs[indices]
-    
-    # Muestrear tiempo y profundidad aleatoriamente
-    batch_times = np.random.uniform(0, max_time_days, batch_size)
-    batch_depths = np.random.uniform(0, max_depth, batch_size)
-    
-    # u, v, y w son 0 en tierra
-    batch_u = np.zeros(batch_size)
-    batch_v = np.zeros(batch_size)
-    batch_w = np.zeros(batch_size)
-    batch_temp = np.full(batch_size, 15.0) # Dummy temperature (15C) until real data is ingested
-    batch_chl_sat = np.zeros(batch_size)   # Dummy CHL sat
-    
-    # Ensamblar tensor X_full: (Lat, Lon, Prof, Tiempo, u, v, w, bathy, temp, chl_sat)
-    X_numpy = np.column_stack((batch_lats, batch_lons, batch_depths, batch_times, batch_u, batch_v, batch_w, batch_bathy, batch_temp, batch_chl_sat))
+    z = np.zeros(batch_size)
+    X_numpy = np.column_stack((
+        land_lats[indices], land_lons[indices],
+        np.random.uniform(0, max_depth, batch_size), np.random.uniform(0, max_time_days, batch_size),
+        z, z, z, land_elevs[indices], np.full(batch_size, 15.0), z, z,   # ..., thetao, chl_sat, forcing_ok=0
+    ))
     return torch.tensor(X_numpy, dtype=torch.float32).to(device)
 
+
+def load_ocean_collocation_pool(t0, device):
+    """Pool de colocación OCEÁNICA con forzante real (build_dataset.build_ocean_collocation).
+    Devuelve tensor (N, 11) con las mismas columnas que X, o None si no existe."""
+    path = os.path.join(os.path.dirname(__file__), '../data/processed/ocean_colloc.parquet')
+    if not os.path.exists(path):
+        print("[Advertencia] No existe ocean_colloc.parquet (regenera con build_dataset.py): "
+              "la PDE solo se evaluará en los puntos con dato.")
+        return None
+    col = pd.read_parquet(path)
+    col['Fecha'] = pd.to_datetime(col['Fecha'])
+    t_days = (col['Fecha'] - t0).dt.total_seconds().values / 86400.0
+    z = np.zeros(len(col))
+    X = np.column_stack((col['Latitud'], col['Longitud'], col['Depth'], t_days,
+                         col['uo'], col['vo'], col['wo'], col['bathy'], col['thetao'], z, np.ones(len(col))))
+    print(f"Pool de colocación oceánica: {len(col)} puntos con forzante real")
+    return torch.tensor(X, dtype=torch.float32).to(device)
+
+
+def sample_collocation(n_data, land_data, ocean_pool, land_ratio, ocean_ratio, max_time_days, max_depth, device):
+    ocean = land = None
+    if ocean_pool is not None and ocean_ratio > 0:
+        idx = torch.randint(0, ocean_pool.shape[0], (max(1, int(n_data * ocean_ratio)),), device=device)
+        ocean = ocean_pool[idx]
+    if land_data is not None and land_ratio > 0:
+        land = get_collocation_batch(land_data, max(1, int(n_data * land_ratio)), max_time_days, max_depth, device)
+    return ocean, land
+
+
+# ----------------------------------------------------------------------------
+# Pérdidas y evaluación
+# ----------------------------------------------------------------------------
 def compute_weighted_data_loss(pred_y, batch_y):
-    """
-    Pérdida de datos multi-fidelidad ponderada por muestra.
-
-    Fase 0 (2026-09-03): sustituye el esquema anterior de pesos fijos
-    (`1.0*loss_bottle + 0.2*loss_ctd`, que trataba a todos los puntos de una
-    misma fuente por igual) por el `peso_entrenamiento` real de cada punto
-    (columna 4 de `batch_y`), calculado por la calibración jerárquica según
-    la confianza real de ese crucero/estación concreto -- ver
-    propuesta_integracion_datos_pinn.md, Sección 8/9.
-
-    batch_y columnas: [y_ctd, y_bottle, mask_ctd, mask_bottle, peso_entrenamiento]
-    """
-    y_ctd = batch_y[:, 0].unsqueeze(1)
-    y_bottle = batch_y[:, 1].unsqueeze(1)
-    mask_ctd = batch_y[:, 2].unsqueeze(1)
-    mask_bottle = batch_y[:, 3].unsqueeze(1)
-    weight = batch_y[:, 4].unsqueeze(1)
-
-    # CTD y botella son mutuamente excluyentes por fila (chl_unified_v1.csv
-    # apila las fuentes en filas separadas, no las empareja en la misma fila),
-    # así que basta sumar target y máscara.
+    """Pérdida de datos multi-fidelidad ponderada por muestra (peso_entrenamiento, col. 4).
+    batch_y: [y_ctd, y_bottle, mask_ctd, mask_bottle, peso]."""
+    y_ctd, y_bottle = batch_y[:, 0:1], batch_y[:, 1:2]
+    mask_ctd, mask_bottle, weight = batch_y[:, 2:3], batch_y[:, 3:4], batch_y[:, 4:5]
     target = y_ctd * mask_ctd + y_bottle * mask_bottle
     mask_any = torch.clamp(mask_ctd + mask_bottle, max=1.0)
-
-    loss_data = torch.sum(weight * mask_any * (pred_y - target) ** 2) / (
-        torch.sum(weight * mask_any) + 1e-8
-    )
-    return loss_data
+    return torch.sum(weight * mask_any * (pred_y - target) ** 2) / (torch.sum(weight * mask_any) + 1e-8)
 
 
-# satellite batch is handled directly in the loop now
-def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=4, lambda_sat=1.0, lambda_dirichlet=1.0, lbfgs_epochs=0, num_layers=6, hidden_dim=128, run_name="PINN_Training",
-               use_fourier_features=False, fourier_mapping_size=64, fourier_scales=(3.0, 3.0, 1.0, 1.0)):
+def compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss):
+    """Las 4 pérdidas de un paso (compartido por Adam y L-BFGS)."""
+    pred = model(batch_x[:, 0:4])
+    l_data = compute_weighted_data_loss(pred, batch_y)
+
+    px = torch.cat([batch_x, ocean], dim=0) if ocean is not None else batch_x
+    coords = px[:, 0:4].clone().requires_grad_(True)
+    l_phys = physics.compute_physics_loss(model, coords, px[:, 4:7], px[:, 8:9], px[:, 7:8], valid_mask=px[:, 10:11])
+
+    l_dir = physics.compute_dirichlet_loss(model, land[:, 0:4]) if land is not None else torch.zeros((), device=batch_x.device)
+
+    chl_sat = batch_x[:, 9:10]
+    mask_sat = (chl_sat > 0.01).squeeze(1)
+    if mask_sat.any():
+        xs = batch_x[mask_sat, 0:4].clone()
+        xs[:, 2] = 0.0
+        l_sat = mse_loss(model(xs), chl_sat[mask_sat])
+    else:
+        l_sat = torch.zeros((), device=batch_x.device)
+    return l_data, l_phys, l_sat, l_dir
+
+
+@torch.no_grad()
+def evaluate_loader(model, loader, device, clim_prior=None, const_value=None):
+    """Métricas sobre un loader (acumulando numeradores/denominadores, no medias de medias):
+    - mse_w: MSE ponderado en log1p (la misma cifra que 'Val_Loss' histórica)
+    - rmse_log10 / rmse_log10_bottle: RMSE en log10(Chl+0.01), todas las muestras / solo botella
+    - mse_clim / mse_const: MSE ponderado de la climatología de train / de la media de train
     """
-    Experiment Harness (Agentes 3 y 4): Entrena la PINN usando Curriculum Learning 
-    y registra experimentos y métricas en MLflow.
-    Incluye una fase final opcional con L-BFGS para eliminar oscilaciones.
+    model.eval()
+    a = dict(se=0.0, w=0.0, se_c=0.0, se_k=0.0, e2=0.0, n=0, e2b=0.0, nb=0)
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        pred = model(x[:, 0:4])
+        m_ctd, m_bot, w = y[:, 2:3], y[:, 3:4], y[:, 4:5]
+        target = y[:, 0:1] * m_ctd + y[:, 1:2] * m_bot
+        m = torch.clamp(m_ctd + m_bot, max=1.0)
+        a['se'] += float(torch.sum(w * m * (pred - target) ** 2)); a['w'] += float(torch.sum(w * m))
+        if clim_prior is not None:
+            a['se_c'] += float(torch.sum(w * m * (clim_prior(x[:, 0:1], x[:, 1:2], x[:, 2:3]) - target) ** 2))
+        if const_value is not None:
+            a['se_k'] += float(torch.sum(w * m * (const_value - target) ** 2))
+        lp = torch.log10(torch.expm1(pred).clamp(min=0) + LOG10_EPS)
+        lt = torch.log10(torch.expm1(target).clamp(min=0) + LOG10_EPS)
+        e2 = (lp - lt) ** 2
+        a['e2'] += float(torch.sum(e2 * m)); a['n'] += int(torch.sum(m))
+        a['e2b'] += float(torch.sum(e2 * m_bot)); a['nb'] += int(torch.sum(m_bot))
+    out = {'mse_w': a['se'] / max(a['w'], 1e-8), 'n': a['n'],
+           'rmse_log10': (a['e2'] / max(a['n'], 1)) ** 0.5,
+           'rmse_log10_bottle': (a['e2b'] / a['nb']) ** 0.5 if a['nb'] > 0 else float('nan'),
+           'n_bottle': a['nb']}
+    if clim_prior is not None:
+        out['mse_clim'] = a['se_c'] / max(a['w'], 1e-8)
+        out['skill_clim'] = 1.0 - out['mse_w'] / out['mse_clim']
+    if const_value is not None:
+        out['mse_const'] = a['se_k'] / max(a['w'], 1e-8)
+        out['skill_const'] = 1.0 - out['mse_w'] / out['mse_const']
+    return out
+
+
+# ----------------------------------------------------------------------------
+# MLflow tolerante a caídas de red
+# ----------------------------------------------------------------------------
+def setup_mlflow():
+    uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if uri:
+        try:
+            urllib.request.urlopen(uri, timeout=8)
+            reachable = True
+        except urllib.error.HTTPError:
+            reachable = True   # el servidor responde (p. ej. 401/404): está alcanzable
+        except Exception as e:
+            print(f"[Advertencia] MLflow remoto {uri} no alcanzable ({type(e).__name__}); uso SQLite local.")
+            reachable = False
+        if reachable:
+            print(f"Conectando al servidor MLflow remoto: {uri}")
+            mlflow.set_tracking_uri(uri)
+            mlflow.set_experiment("PINNs_BajaCalifornia")
+            return uri
+    db_path = os.path.join(os.path.dirname(__file__), 'mlflow.db')
+    print(f"Usando MLflow local (SQLite): {db_path}")
+    mlflow.set_tracking_uri(f"sqlite:///{db_path}")
+    mlflow.set_experiment("PINNs_BajaCalifornia")
+    return db_path
+
+
+class SafeMlflow:
+    """Un fallo de red al registrar métricas no debe matar un entrenamiento de horas."""
+    def __init__(self):
+        self.fails = 0
+
+    def metrics(self, d, step):
+        if self.fails >= 5:
+            return
+        try:
+            mlflow.log_metrics(d, step=step)
+            self.fails = 0
+        except Exception as e:
+            self.fails += 1
+            print(f"[Advertencia] mlflow.log_metrics falló ({type(e).__name__}); {'se desactiva el registro remoto' if self.fails >= 5 else 'sigo entrenando'}.")
+
+    def artifact(self, path):
+        try:
+            mlflow.log_artifact(path)
+        except Exception as e:
+            print(f"[Advertencia] No se pudo subir {os.path.basename(path)} a MLflow ({type(e).__name__}); queda en disco.")
+
+
+# ----------------------------------------------------------------------------
+# Entrenamiento
+# ----------------------------------------------------------------------------
+def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_ratio=0.5, lambda_sat=1.0,
+               lambda_dirichlet=1.0, lbfgs_epochs=0, num_layers=6, hidden_dim=128, run_name="PINN_Training",
+               use_fourier_features=False, fourier_mapping_size=64, fourier_scales=(3.0, 3.0, 1.0, 1.0),
+               use_seasonal=False, use_climatology_prior=False,
+               lambda_phys_max=1.0, ocean_colloc_ratio=1.0,
+               lr_schedule="cosine", min_lr_frac=0.02, patience=None, smooth_window=5,
+               fold="A", seed=0):
+    """
+    Experiment Harness. Protocolo de evaluación (2026-09-25):
+    - val (elige checkpoint y para) y test (se evalúa UNA vez al final) son cruceros distintos
+      (LOCO_FOLDS[fold]).
+    - Se registran baselines (media y climatología de train) y el skill del modelo frente a ellos.
+    - El mejor checkpoint se elige sobre Val_Loss SUAVIZADO (media móvil de `smooth_window`
+      épocas) para no premiar un mínimo aislado de una serie ruidosa.
+    - `patience`: épocas sin mejora del val suavizado tras las que se detiene (None = no parar).
+    - `colloc_ratio`: puntos de tierra (Dirichlet) por punto de dato; `ocean_colloc_ratio`: puntos de
+      colocación oceánica (PDE en huecos) por punto de dato.
+    - `lambda_phys_max`: peso final de la PDE (antes 500 fijo, ajustado a una pérdida física
+      subestimada por un bug de doble normalización; con el operador corregido hay que reajustarlo).
     """
     print("Iniciando Experiment Harness (PINN Training)...")
-    
-    # 1. Configurar MLflow
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-    if tracking_uri:
-        print(f"Conectando al servidor MLflow remoto: {tracking_uri}")
-        mlflow.set_tracking_uri(tracking_uri)
-    else:
-        db_path = os.path.join(os.path.dirname(__file__), 'mlflow.db')
-        print(f"Usando MLflow local (SQLite): {db_path}")
-        mlflow.set_tracking_uri(f"sqlite:///{db_path}")
-        
-    mlflow.set_experiment("PINNs_BajaCalifornia")
-    
-    # 2. Cargar DataLoader
-    print("Preparando DataLoaders (Train/Test Split)...")
-    train_loader, val_loader = get_dataloaders(batch_size=batch_size)
-    
-    max_time_days = train_loader.dataset.df['time_days'].max()
-    max_depth = train_loader.dataset.df['Depth'].max()
-    
-    print("Cargando malla de tierra para Puntos de Colocación...")
-    land_data = load_land_points()
-    
-    # 3. Inicializar Arquitectura (Agent 3) y Física (Agent 2)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    tracking_uri = setup_mlflow()
+    safe = SafeMlflow()
+
+    print(f"Preparando DataLoaders (fold {fold}: val≠test)...")
+    train_loader, val_loader, test_loader = get_dataloaders(batch_size=batch_size, fold=fold, return_test=True)
+    train_ds = train_loader.dataset
+    max_time_days = float(train_ds.df['time_days'].max())
+    max_depth = float(train_ds.df['Depth'].max())
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Usando dispositivo: {device}")
-    
-    # Extraer estadísticas para normalización (solo del train set para evitar data leakage)
-    dataset_x = train_loader.dataset.X[:, 0:4]
+    land_data = load_land_points()
+    ocean_pool = load_ocean_collocation_pool(train_ds.t0, device)
+
+    # Estadísticas de normalización y climatología: SOLO del train
+    dataset_x = train_ds.X[:, 0:4]
     mean_x = dataset_x.mean(dim=0).numpy()
     std_x = dataset_x.std(dim=0).numpy()
-    print(f"Normalizando entradas con Mean: {mean_x} y Std: {std_x}")
-    
-    model = CoastalPINNModel(num_layers=num_layers, hidden_dim=hidden_dim, input_mean=mean_x, input_std=std_x,
-                              use_fourier_features=use_fourier_features, fourier_mapping_size=fourier_mapping_size,
-                              fourier_scales=fourier_scales).to(device)
-    # Pasamos el std_x a la física para corregir la dimensionalidad de las derivadas
-    physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
-    
-    # El optimizador ahora entrena tanto la red neuronal como los parámetros biológicos (Física Inversa)
-    optimizer = optim.Adam(list(model.parameters()) + list(physics.parameters()), lr=lr, weight_decay=1e-4)
-    mse_loss = torch.nn.MSELoss()
-    
-    with mlflow.start_run(run_name=run_name):
-        mlflow.log_params({
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "colloc_ratio": colloc_ratio,
-            "learning_rate": lr,
-            "curriculum_epochs": curriculum_epochs,
-            "lambda_sat": lambda_sat,
-            "lambda_dirichlet": lambda_dirichlet,
-            "model_layers": num_layers,
-            "hidden_dim": hidden_dim
-        })
-        
-        history_data_loss = []
-        history_phys_loss = []
-        history_sat_loss = []
-        history_dirichlet_loss = []
-        history_val_loss = []
-        history_steps = []
-        best_val_loss = float('inf')
-        best_model_state = None
+    y_tr, w_tr, has_tr = train_ds.target_arrays()
+    lat_rng = (float(train_ds.df['Latitud'].min()) - 0.1, float(train_ds.df['Latitud'].max()) + 0.1)
+    lon_rng = (float(train_ds.df['Longitud'].min()) - 0.1, float(train_ds.df['Longitud'].max()) + 0.1)
+    grid, lz_rng = build_climatology_grid(
+        train_ds.df['Latitud'].values[has_tr], train_ds.df['Longitud'].values[has_tr],
+        train_ds.df['Depth'].values[has_tr], y_tr[has_tr], w_tr[has_tr], lat_rng, lon_rng)
+    clim_prior = ClimatologyPrior(grid, lat_rng, lon_rng, lz_rng).to(device)
+    const_value = float(np.sum(w_tr[has_tr] * y_tr[has_tr]) / np.sum(w_tr[has_tr]))
 
+    model = CoastalPINNModel(
+        num_layers=num_layers, hidden_dim=hidden_dim, input_mean=mean_x, input_std=std_x,
+        use_fourier_features=use_fourier_features, fourier_mapping_size=fourier_mapping_size,
+        fourier_scales=fourier_scales, use_seasonal=use_seasonal,
+        climatology_prior=ClimatologyPrior(grid, lat_rng, lon_rng, lz_rng) if use_climatology_prior else None,
+    ).to(device)
+    physics = CoastalPhysicsPINN(diff_coef=0.1, std_x=torch.tensor(std_x, dtype=torch.float32, device=device)).to(device)
+
+    base_val = evaluate_loader(model, val_loader, device, clim_prior, const_value)
+    base_test = evaluate_loader(model, test_loader, device, clim_prior, const_value)
+    print(f"BASELINES en val:  media={base_val['mse_const']:.4f}  climatología={base_val['mse_clim']:.4f}")
+    print(f"BASELINES en test: media={base_test['mse_const']:.4f}  climatología={base_test['mse_clim']:.4f}")
+
+    optimizer = optim.Adam(list(model.parameters()) + list(physics.parameters()), lr=lr, weight_decay=1e-4)
+    scheduler = (optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=lr * min_lr_frac)
+                 if lr_schedule == "cosine" else None)
+    mse_loss = torch.nn.MSELoss()
+
+    with mlflow.start_run(run_name=run_name):
+        try:
+            mlflow.log_params({
+                "epochs": epochs, "batch_size": batch_size, "colloc_ratio": colloc_ratio,
+                "ocean_colloc_ratio": ocean_colloc_ratio, "learning_rate": lr, "lr_schedule": lr_schedule,
+                "curriculum_epochs": curriculum_epochs, "lambda_sat": lambda_sat,
+                "lambda_dirichlet": lambda_dirichlet, "lambda_phys_max": lambda_phys_max,
+                "model_layers": num_layers, "hidden_dim": hidden_dim, "lbfgs_epochs": lbfgs_epochs,
+                "use_fourier_features": use_fourier_features, "use_seasonal": use_seasonal,
+                "use_climatology_prior": use_climatology_prior, "patience": patience, "fold": fold, "seed": seed,
+                "val_baseline_const": round(base_val['mse_const'], 5), "val_baseline_clim": round(base_val['mse_clim'], 5),
+            })
+        except Exception as e:
+            print(f"[Advertencia] log_params falló ({type(e).__name__}); sigo.")
+
+        hist = {k: [] for k in ('epoch', 'Data_Loss', 'Physics_Loss', 'Sat_Loss', 'Dirichlet_Loss', 'Val_Loss',
+                                'Val_RMSE_log10', 'Val_Skill_clim', 'lr')}
+        state = dict(best=float('inf'), best_state=None, best_epoch=-1, since=0)
+
+        def end_of_epoch(epoch, avg, lam_phys, cur_lr):
+            v = evaluate_loader(model, val_loader, device, clim_prior, const_value)
+            hist['epoch'].append(epoch); hist['Val_Loss'].append(v['mse_w']); hist['lr'].append(cur_lr)
+            for k in ('Data_Loss', 'Physics_Loss', 'Sat_Loss', 'Dirichlet_Loss'):
+                hist[k].append(avg[k])
+            hist['Val_RMSE_log10'].append(v['rmse_log10']); hist['Val_Skill_clim'].append(v['skill_clim'])
+            smooth = float(np.mean(hist['Val_Loss'][-smooth_window:]))
+            improved = smooth < state['best'] - 1e-6
+            if improved:
+                state.update(best=smooth, best_epoch=epoch, since=0,
+                             best_state={k: t.detach().cpu().clone() for k, t in model.state_dict().items()})
+            else:
+                state['since'] += 1
+            safe.metrics({
+                **{k: avg[k] for k in ('Data_Loss', 'Physics_Loss', 'Sat_Loss', 'Dirichlet_Loss')},
+                "Val_Loss": v['mse_w'], "Val_Loss_smooth": smooth, "Val_RMSE_log10": v['rmse_log10'],
+                "Val_RMSE_log10_bottle": v['rmse_log10_bottle'], "Val_Skill_clim": v['skill_clim'],
+                "Val_Skill_const": v['skill_const'], "lambda_phys": lam_phys, "lr": cur_lr,
+                "param_mu_max": float(physics.mu_max.abs()), "param_k_e": float(physics.k_e.abs()), "param_m": float(physics.m.abs()),
+            }, step=epoch)
+            return patience is not None and state['since'] >= patience
+
+        stopped_early = False
         for epoch in range(epochs):
             model.train()
-            epoch_data_loss = 0.0
-            epoch_physics_loss = 0.0
-            epoch_sat_loss = 0.0
-            epoch_dirichlet_loss = 0.0
-
-            # Curriculum Learning: El peso de la física aumenta gradualmente hasta 500.0 (para balancear magnitudes)
-            lambda_phys = (epoch / curriculum_epochs) * 500.0 if epoch < curriculum_epochs else 500.0
-                
+            acc = dict(Data_Loss=0.0, Physics_Loss=0.0, Sat_Loss=0.0, Dirichlet_Loss=0.0)
+            lam_phys = min(1.0, epoch / max(curriculum_epochs, 1)) * lambda_phys_max
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
-            for batch_x_full, batch_y in pbar:
-                batch_x_full = batch_x_full.to(device)
-                batch_y = batch_y.to(device)
-                # --- INYECCIÓN DE PUNTOS DE COLOCACIÓN (TIERRA FIRME) ---
-                if land_data is not None:
-                    # Generamos puntos de tierra proporcionales al batch (ej. 4x más puntos de tierra)
-                    num_colloc = batch_x_full.shape[0] * colloc_ratio
-                    colloc_x_full = get_collocation_batch(land_data, num_colloc, max_time_days, max_depth, device)
-                    physics_x_full = torch.cat([batch_x_full, colloc_x_full], dim=0)
-                else:
-                    physics_x_full = batch_x_full
-                
-                # Desacoplar tensores físicos (sobre la unión del mar y tierra)
-                x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
-                u_velocities_phys = physics_x_full[:, 4:7] # u, v, w
-                bathy_phys = physics_x_full[:, 7:8]
-                temp_phys = physics_x_full[:, 8:9]
-                
+            for batch_x, batch_y in pbar:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                ocean, land = sample_collocation(batch_x.shape[0], land_data, ocean_pool, colloc_ratio,
+                                                 ocean_colloc_ratio, max_time_days, max_depth, device)
                 optimizer.zero_grad()
-                
-                # --- DATA LOSS (Multi-Fidelity: Botellas y CTD, ponderado por peso_entrenamiento) ---
-                x_coords_data = batch_x_full[:, 0:4].to(device)
-                pred_y = model(x_coords_data)
-
-                loss_data = compute_weighted_data_loss(pred_y, batch_y)
-
-                # --- PHYSICS LOSS (Empíricos + Tierra firme) ---
-                loss_physics = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
-
-                # --- DIRICHLET LOSS (C≈0 en tierra firme, ver physics_loss.py) ---
-                if land_data is not None:
-                    loss_dirichlet = physics.compute_dirichlet_loss(model, colloc_x_full[:, 0:4])
-                else:
-                    loss_dirichlet = torch.tensor(0.0, device=device)
-
-                # --- SATELLITE LOSS (Condición de frontera z=0, satélite bias-corregido en el dataloader) ---
-                chl_sat = batch_x_full[:, 9:10].to(device)
-                mask_sat = (chl_sat > 0.01).squeeze(1) # Filtramos nubes/sin datos
-                if mask_sat.any():
-                    x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
-                    x_coords_sat[:, 2] = 0.0 # Forzar profundidad z=0
-                    pred_sat = model(x_coords_sat)
-                    loss_satelite = mse_loss(pred_sat, chl_sat[mask_sat])
-                else:
-                    loss_satelite = torch.tensor(0.0, device=device)
-
-                # --- TOTAL LOSS ---
-                loss_total = loss_data + lambda_phys * loss_physics + lambda_sat * loss_satelite + lambda_dirichlet * loss_dirichlet
-
-                loss_total.backward()
+                l_data, l_phys, l_sat, l_dir = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                loss = l_data + lam_phys * l_phys + lambda_sat * l_sat + lambda_dirichlet * l_dir
+                loss.backward()
                 optimizer.step()
+                acc['Data_Loss'] += l_data.item(); acc['Physics_Loss'] += l_phys.item()
+                acc['Sat_Loss'] += l_sat.item(); acc['Dirichlet_Loss'] += l_dir.item()
+                pbar.set_postfix({"L_data": f"{l_data.item():.4f}", "L_phys": f"{l_phys.item():.4f}",
+                                  "L_sat": f"{l_sat.item():.4f}", "L_dir": f"{l_dir.item():.4f}"})
+            cur_lr = optimizer.param_groups[0]['lr']
+            if scheduler is not None:
+                scheduler.step()
+            avg = {k: v / len(train_loader) for k, v in acc.items()}
+            if end_of_epoch(epoch, avg, lam_phys, cur_lr):
+                print(f"\nEarly stopping en la época {epoch}: sin mejora del val suavizado en {patience} épocas "
+                      f"(mejor en la época {state['best_epoch']}).")
+                stopped_early = True
+                break
 
-                epoch_data_loss += loss_data.item()
-                epoch_physics_loss += loss_physics.item()
-                epoch_sat_loss += loss_satelite.item()
-                epoch_dirichlet_loss += loss_dirichlet.item()
-
-                pbar.set_postfix({"L_data": f"{loss_data.item():.4f}", "L_phys": f"{loss_physics.item():.4f}", "L_sat": f"{loss_satelite.item():.4f}", "L_dir": f"{loss_dirichlet.item():.4f}"})
-            
-            # Promedios del epoch (Train)
-            avg_data_loss = epoch_data_loss / len(train_loader)
-            avg_phys_loss = epoch_physics_loss / len(train_loader)
-            avg_sat_loss = epoch_sat_loss / len(train_loader)
-            avg_dirichlet_loss = epoch_dirichlet_loss / len(train_loader)
-
-            # --- EVALUACIÓN (TEST SET) ---
-            model.eval()
-            epoch_val_loss = 0.0
-            with torch.no_grad():
-                for val_x, val_y in val_loader:
-                    val_x = val_x.to(device)
-                    val_y = val_y.to(device)
-                    x_coords_val = val_x[:, 0:4]
-                    pred_val = model(x_coords_val)
-
-                    loss_val = compute_weighted_data_loss(pred_val, val_y)
-
-                    epoch_val_loss += loss_val.item()
-            avg_val_loss = epoch_val_loss / len(val_loader)
-
-            # Early Stopping Check
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-
-            mlflow.log_metrics({
-                "Data_Loss": avg_data_loss,
-                "Physics_Loss": avg_phys_loss,
-                "Sat_Loss": avg_sat_loss,
-                "Dirichlet_Loss": avg_dirichlet_loss,
-                "Val_Loss": avg_val_loss,
-                "Total_Loss": avg_data_loss + lambda_phys * avg_phys_loss + lambda_sat * avg_sat_loss + lambda_dirichlet * avg_dirichlet_loss,
-                "lambda_phys": lambda_phys
-            }, step=epoch)
-
-            history_data_loss.append(avg_data_loss)
-            history_phys_loss.append(avg_phys_loss)
-            history_sat_loss.append(avg_sat_loss)
-            history_dirichlet_loss.append(avg_dirichlet_loss)
-            history_val_loss.append(avg_val_loss)
-            history_steps.append(epoch)
-            
-        # ==========================================
-        # FASE 2: Refinamiento con L-BFGS
-        # ==========================================
-        if lbfgs_epochs > 0:
+        # ---------------- Fase L-BFGS (opcional, esquema "Golden Run") ----------------
+        if lbfgs_epochs > 0 and not stopped_early:
             print(f"\nIniciando refinamiento de {lbfgs_epochs} epochs con optimizador L-BFGS...")
-            
-            # Usamos el peso final del curriculum
-            lambda_phys_final = 500.0 
-            
             for epoch in range(epochs, epochs + lbfgs_epochs):
                 model.train()
-                epoch_data_loss = 0.0
-                epoch_physics_loss = 0.0
-                epoch_sat_loss = 0.0
-                epoch_dirichlet_loss = 0.0
-
-                pbar = tqdm(train_loader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
+                acc = dict(Data_Loss=0.0, Physics_Loss=0.0, Sat_Loss=0.0, Dirichlet_Loss=0.0)
                 nan_detected = False
-                for batch_x_full, batch_y in pbar:
-                    # Re-inicializar L-BFGS por cada mini-batch para no arrastrar
-                    # historial del Hessiano inválido de batches anteriores.
-                    optimizer_lbfgs = optim.LBFGS(list(model.parameters()) + list(physics.parameters()), 
-                                                  lr=0.01, 
-                                                  max_iter=20, 
-                                                  tolerance_grad=1e-7, 
-                                                  tolerance_change=1e-9, 
-                                                  history_size=50,
-                                                  line_search_fn="strong_wolfe")
-                    
-                    batch_x_full = batch_x_full.to(device)
-                    batch_y = batch_y.to(device)
-                    
-                    if land_data is not None:
-                        num_colloc = batch_x_full.shape[0] * colloc_ratio
-                        colloc_x_full = get_collocation_batch(land_data, num_colloc, max_time_days, max_depth, device)
-                        physics_x_full = torch.cat([batch_x_full, colloc_x_full], dim=0)
-                    else:
-                        physics_x_full = batch_x_full
-                    
-                    x_coords_phys = physics_x_full[:, 0:4].requires_grad_(True)
-                    u_velocities_phys = physics_x_full[:, 4:7] # u, v, w
-                    bathy_phys = physics_x_full[:, 7:8]
-                    temp_phys = physics_x_full[:, 8:9]
-                    x_coords_data = batch_x_full[:, 0:4].to(device)
-                    
+                pbar = tqdm(train_loader, desc=f"L-BFGS Epoch {epoch+1}/{epochs + lbfgs_epochs}")
+                for batch_x, batch_y in pbar:
+                    opt_l = optim.LBFGS(list(model.parameters()) + list(physics.parameters()), lr=0.01, max_iter=20,
+                                        tolerance_grad=1e-7, tolerance_change=1e-9, history_size=50,
+                                        line_search_fn="strong_wolfe")
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                    ocean, land = sample_collocation(batch_x.shape[0], land_data, ocean_pool, colloc_ratio,
+                                                     ocean_colloc_ratio, max_time_days, max_depth, device)
+
                     def closure():
-                        optimizer_lbfgs.zero_grad()
-                        pred_y = model(x_coords_data)
+                        opt_l.zero_grad()
+                        d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                        t = d + lambda_phys_max * p + lambda_sat * s + lambda_dirichlet * r
+                        t.backward()
+                        return t
 
-                        loss_d = compute_weighted_data_loss(pred_y, batch_y)
-
-                        loss_p = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys)
-
-                        if land_data is not None:
-                            loss_dir = physics.compute_dirichlet_loss(model, colloc_x_full[:, 0:4])
-                        else:
-                            loss_dir = torch.tensor(0.0, device=device)
-
-                        chl_sat = batch_x_full[:, 9:10].to(device)
-                        mask_sat = (chl_sat > 0.01).squeeze(1)
-                        if mask_sat.any():
-                            x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
-                            x_coords_sat[:, 2] = 0.0
-                            loss_s = mse_loss(model(x_coords_sat), chl_sat[mask_sat])
-                        else:
-                            loss_s = torch.tensor(0.0, device=device)
-
-                        loss_t = loss_d + lambda_phys_final * loss_p + lambda_sat * loss_s + lambda_dirichlet * loss_dir
-                        loss_t.backward()
-                        return loss_t
-
-                    # Guardamos el estado antes del step por si da NaN
                     prev_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-                    # L-BFGS ejecuta el closure múltiples veces internamente
-                    optimizer_lbfgs.step(closure)
-
-                    with torch.no_grad():
-                        pred_y = model(x_coords_data)
-                        l_data = compute_weighted_data_loss(pred_y, batch_y).item()
-
-                        chl_sat = batch_x_full[:, 9:10].to(device)
-                        mask_sat = (chl_sat > 0.01).squeeze(1)
-                        if mask_sat.any():
-                            x_coords_sat = batch_x_full[mask_sat, 0:4].clone().to(device)
-                            x_coords_sat[:, 2] = 0.0
-                            l_sat = mse_loss(model(x_coords_sat), chl_sat[mask_sat]).item()
-                        else:
-                            l_sat = 0.0
-
-                        if land_data is not None:
-                            l_dir = physics.compute_dirichlet_loss(model, colloc_x_full[:, 0:4]).item()
-                        else:
-                            l_dir = 0.0
-
-                    with torch.enable_grad():
-                        l_phys = physics.compute_physics_loss(model, x_coords_phys, u_velocities_phys, temp_phys, bathy_phys).item()
-
-                    if np.isnan(l_data) or np.isnan(l_phys):
-                        print("\n[Advertencia] NaN detectado en L-BFGS. Revirtiendo pesos y cancelando L-BFGS para esta run.")
+                    opt_l.step(closure)
+                    d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                    if not all(np.isfinite(float(z)) for z in (d, p)):
+                        print("\n[Advertencia] NaN detectado en L-BFGS. Revirtiendo pesos y cancelando L-BFGS.")
                         model.load_state_dict(prev_state)
                         nan_detected = True
                         break
-
-                    epoch_data_loss += l_data
-                    epoch_physics_loss += l_phys
-                    epoch_sat_loss += l_sat
-                    epoch_dirichlet_loss += l_dir
-                    pbar.set_postfix({"L_data": f"{l_data:.4f}", "L_phys": f"{l_phys:.4f}", "L_sat": f"{l_sat:.4f}", "L_dir": f"{l_dir:.4f}"})
-                
+                    acc['Data_Loss'] += d.item(); acc['Physics_Loss'] += p.item()
+                    acc['Sat_Loss'] += s.item(); acc['Dirichlet_Loss'] += r.item()
+                    pbar.set_postfix({"L_data": f"{d.item():.4f}", "L_phys": f"{p.item():.4f}"})
                 if nan_detected:
                     break
-                
-                avg_data_loss = epoch_data_loss / len(train_loader)
-                avg_phys_loss = epoch_physics_loss / len(train_loader)
-                avg_sat_loss = epoch_sat_loss / len(train_loader)
-                avg_dirichlet_loss = epoch_dirichlet_loss / len(train_loader)
+                avg = {k: v / len(train_loader) for k, v in acc.items()}
+                if end_of_epoch(epoch, avg, lambda_phys_max, 0.01):
+                    print(f"\nEarly stopping (L-BFGS) en la época {epoch}.")
+                    break
 
-                # --- EVALUACIÓN (TEST SET) L-BFGS ---
-                model.eval()
-                epoch_val_loss = 0.0
-                with torch.no_grad():
-                    for val_x, val_y in val_loader:
-                        val_x = val_x.to(device)
-                        val_y = val_y.to(device)
-                        x_coords_val = val_x[:, 0:4]
-                        pred_val = model(x_coords_val)
+        # ---------------- Selección final y TEST (una sola vez) ----------------
+        print("Entrenamiento completado. Restaurando el mejor modelo según Val Loss suavizado...")
+        if state['best_state'] is not None:
+            model.load_state_dict(state['best_state'])
+        final_val = evaluate_loader(model, val_loader, device, clim_prior, const_value)
+        final_test = evaluate_loader(model, test_loader, device, clim_prior, const_value)
+        print(f"Mejor época (val suavizado): {state['best_epoch']}  (val suavizado={state['best']:.4f})")
+        print(f"VAL  : MSE={final_val['mse_w']:.4f}  skill_clim={final_val['skill_clim']:+.3f}  skill_media={final_val['skill_const']:+.3f}  "
+              f"RMSE_log10={final_val['rmse_log10']:.3f}  (botella: {final_val['rmse_log10_bottle']:.3f}, n={final_val['n_bottle']})")
+        print(f"TEST : MSE={final_test['mse_w']:.4f}  skill_clim={final_test['skill_clim']:+.3f}  skill_media={final_test['skill_const']:+.3f}  "
+              f"RMSE_log10={final_test['rmse_log10']:.3f}  (botella: {final_test['rmse_log10_bottle']:.3f}, n={final_test['n_bottle']})")
+        try:
+            mlflow.log_metrics({
+                "Best_Epoch": state['best_epoch'], "Best_Val_Smooth": state['best'],
+                "Final_Val_MSE": final_val['mse_w'], "Final_Val_Skill_clim": final_val['skill_clim'],
+                "Test_MSE": final_test['mse_w'], "Test_Skill_clim": final_test['skill_clim'],
+                "Test_Skill_const": final_test['skill_const'], "Test_RMSE_log10": final_test['rmse_log10'],
+                "Test_RMSE_log10_bottle": final_test['rmse_log10_bottle'],
+                "Test_Baseline_clim": final_test['mse_clim'], "Test_Baseline_const": final_test['mse_const'],
+            })
+        except Exception as e:
+            print(f"[Advertencia] No se pudieron registrar las métricas finales en MLflow ({type(e).__name__}).")
 
-                        loss_val = compute_weighted_data_loss(pred_val, val_y)
-
-                        epoch_val_loss += loss_val.item()
-                avg_val_loss = epoch_val_loss / len(val_loader)
-
-                # Early Stopping Check (L-BFGS)
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-
-                mlflow.log_metrics({
-                    "Data_Loss": avg_data_loss,
-                    "Physics_Loss": avg_phys_loss,
-                    "Sat_Loss": avg_sat_loss,
-                    "Dirichlet_Loss": avg_dirichlet_loss,
-                    "Val_Loss": avg_val_loss,
-                    "Total_Loss": avg_data_loss + lambda_phys_final * avg_phys_loss + lambda_sat * avg_sat_loss + lambda_dirichlet * avg_dirichlet_loss,
-                    "lambda_phys": lambda_phys_final
-                }, step=epoch)
-
-                history_data_loss.append(avg_data_loss)
-                history_phys_loss.append(avg_phys_loss)
-                history_sat_loss.append(avg_sat_loss)
-                history_dirichlet_loss.append(avg_dirichlet_loss)
-                history_val_loss.append(avg_val_loss)
-                history_steps.append(epoch)
-                
-        print("Entrenamiento completado. Restaurando el mejor modelo según Val Loss...")
-        if best_model_state is not None:
-            model.load_state_dict(best_model_state)
-            
-        print(f"Mejor Val Loss alcanzado: {best_val_loss:.4f}")
-        model_path = os.path.join(os.path.dirname(__file__), f"pinn_model_{run_name}.pth")
+        here = os.path.dirname(__file__)
+        model_path = os.path.join(here, f"pinn_model_{run_name}.pth")
         torch.save(model.state_dict(), model_path)
-        mlflow.log_artifact(model_path)
-        
-        # Guardar métricas sin procesar en un CSV local
-        import pandas as pd
-        metrics_df = pd.DataFrame({
-            'Epoch': history_steps,
-            'Data_Loss': history_data_loss,
-            'Physics_Loss': history_phys_loss,
-            'Sat_Loss': history_sat_loss,
-            'Dirichlet_Loss': history_dirichlet_loss,
-            'Val_Loss': history_val_loss
-        })
-        csv_path = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.csv")
+        safe.artifact(model_path)
+
+        summary = dict(run_name=run_name, fold=fold, best_epoch=state['best_epoch'], stopped_early=stopped_early,
+                       epochs_run=len(hist['epoch']), val=final_val, test=final_test,
+                       baselines_val={k: base_val[k] for k in ('mse_const', 'mse_clim')},
+                       baselines_test={k: base_test[k] for k in ('mse_const', 'mse_clim')},
+                       physics_params={k: float(getattr(physics, k).abs()) for k in ('mu_max', 'k_e', 'm')})
+        json_path = os.path.join(here, f"results_{run_name}.json")
+        with open(json_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        safe.artifact(json_path)
+
+        metrics_df = pd.DataFrame(hist)
+        csv_path = os.path.join(here, f"training_metrics_{run_name}.csv")
         metrics_df.to_csv(csv_path, index=False)
-        mlflow.log_artifact(csv_path)
-        
-        # Generar y guardar gráfico de métricas
-        plt.figure(figsize=(10, 6))
-        plt.plot(history_steps, history_data_loss, label='Train Data Loss', color='blue')
-        plt.plot(history_steps, history_val_loss, label='Val Loss (Hold-out)', color='green')
-        plt.plot(history_steps, history_phys_loss, label='Physics Loss', color='red')
-        plt.plot(history_steps, history_dirichlet_loss, label='Dirichlet Loss (tierra)', color='purple')
-        plt.yscale('log')
-        plt.title('Convergencia del Entrenamiento PINN 4D')
-        plt.xlabel('Epochs')
-        plt.ylabel('Pérdida (Log Scale)')
-        plt.grid(True, which="both", ls="--", alpha=0.5)
-        plt.legend()
-        metrics_file = os.path.join(os.path.dirname(__file__), f"training_metrics_{run_name}.png")
-        plt.savefig(metrics_file, dpi=300, bbox_inches='tight')
-        plt.close()
-        mlflow.log_artifact(metrics_file)
-        
-        # Generar inferencia espacial y guardar el mapa
-        print("Generando mapa de inferencia final para MLflow...")
-        lat_bnds = [23.82, 32.75]
-        lon_bnds = [-119.85, -111.92]
-        inference_file = plot_continuous_field(model_path, lat_bnds, lon_bnds, depth=0.0, time_day=100.0, resolution=200, run_name=run_name, num_layers=num_layers, hidden_dim=hidden_dim)
-        mlflow.log_artifact(inference_file)
-        
-        print(f"Artefactos y métricas registradas en {tracking_uri if tracking_uri else db_path}")
+        safe.artifact(csv_path)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(hist['epoch'], hist['Data_Loss'], label='Train Data Loss', color='blue')
+        ax.plot(hist['epoch'], hist['Val_Loss'], label='Val Loss (cruceros de val)', color='green')
+        ax.axhline(base_val['mse_const'], color='gray', ls=':', label='Baseline: media del train')
+        ax.axhline(base_val['mse_clim'], color='black', ls='--', label='Baseline: climatología')
+        ax.axvline(state['best_epoch'], color='orange', ls='-.', label=f"Mejor época ({state['best_epoch']})")
+        ax.plot(hist['epoch'], hist['Physics_Loss'], label='Physics Loss', color='red', alpha=0.6)
+        ax.set_yscale('log'); ax.grid(True, which="both", ls="--", alpha=0.4); ax.legend()
+        ax.set_title(f'Convergencia PINN 4D — {run_name}'); ax.set_xlabel('Epochs'); ax.set_ylabel('Pérdida (log)')
+        png_path = os.path.join(here, f"training_metrics_{run_name}.png")
+        fig.savefig(png_path, dpi=200, bbox_inches='tight'); plt.close(fig)
+        safe.artifact(png_path)
+
+        try:
+            print("Generando mapa de inferencia final...")
+            inf = plot_continuous_field(model_path, [23.82, 32.75], [-119.85, -111.92], depth=0.0, time_day=100.0,
+                                        resolution=200, run_name=run_name, num_layers=num_layers, hidden_dim=hidden_dim)
+            safe.artifact(inf)
+        except Exception as e:
+            print(f"[Advertencia] No se pudo generar el mapa de inferencia ({type(e).__name__}: {e}).")
+        print(f"Artefactos y métricas registradas en {tracking_uri}")
+    return summary
+
 
 if __name__ == "__main__":
-    # Entrenamiento Completo en Servidor (Fase Gold)
-    # Incluye fase Adam + fase L-BFGS.
-    # lambda_sat bajado de 15.0 a 1.0 (2026-09-03, Fase 0 de
-    # propuesta_integracion_datos_pinn.md): el match-up satélite-vs-in-situ
-    # midió r=0.57 (vs. r=0.81 del CTD calibrado), así que el satélite no
-    # debería pesar más que los datos in-situ en la función de pérdida.
-    train_pinn(epochs=3000, batch_size=2048, lr=1e-3, curriculum_epochs=2000, colloc_ratio=4, lambda_sat=1.0, lambda_dirichlet=1.0, lbfgs_epochs=500)
+    train_pinn(epochs=300, batch_size=65536, lr=2e-3, curriculum_epochs=100, patience=60,
+               use_seasonal=True, use_climatology_prior=True, fold="A")

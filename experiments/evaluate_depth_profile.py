@@ -26,15 +26,7 @@ def evaluate_vertical_profile():
         return
         
     state_dict = torch.load(model_path, map_location=device, weights_only=False)
-    input_mean = state_dict['input_mean'].cpu().numpy()
-    input_std = state_dict['input_std'].cpu().numpy()
-    # Auto-detecta si el checkpoint usa el embedding de Fourier (2026-09-14, pinn_model.py)
-    use_fourier = 'fourier.B' in state_dict
-    fourier_size = state_dict['fourier.B'].shape[1] if use_fourier else 64
-
-    model = CoastalPINNModel(num_layers=6, hidden_dim=128, input_mean=input_mean, input_std=input_std,
-                              use_fourier_features=use_fourier, fourier_mapping_size=fourier_size)
-    model.load_state_dict(state_dict)
+    model = CoastalPINNModel.from_state_dict(state_dict, num_layers=6, hidden_dim=128)
     model.to(device)
     model.eval()
     
