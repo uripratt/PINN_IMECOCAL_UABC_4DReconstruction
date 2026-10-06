@@ -39,12 +39,23 @@ CONFIGS = {
     "S5_prior_seasonal_sinfisica": dict(use_climatology_prior=True, use_seasonal=True, lambda_phys_max=0.0),
     "S6_prior_seasonal_fisica10":  dict(use_climatology_prior=True, use_seasonal=True, lambda_phys_max=10.0),
 }
+# Configuración de duración de la antigua run_v2_corregido.py (fusionada el 2026-10-06).
+# No entra en el cribado: se lanza a mano con `python run_battery_a100.py one L_legacy_10k A`.
+# Adam puro, 10.000 épocas, lr 1e-4, batch 2048, sin parada anticipada (patience=None).
+# Sirve para la prueba de duración (paso 5 del plan). OJO: colloc_ratio es ahora la razón de
+# tierra; la fracción oceánica se mantiene en 1.0.
+LONG_CONFIGS = {
+    "L_legacy_10k":     dict(epochs=10000, batch_size=2048, lr=1e-4, curriculum_epochs=1000, patience=None,
+                             lr_schedule="cosine", use_climatology_prior=False),
+    "L_legacy_10k_S6":  dict(epochs=10000, batch_size=2048, lr=1e-4, curriculum_epochs=1000, patience=None,
+                             lr_schedule="cosine", use_climatology_prior=True, use_seasonal=True, lambda_phys_max=10.0),
+}
 DATE_TAG = "20260925"
 
 
-def run(name, fold):
-    kw = {**BASE, **CONFIGS[name]}
-    run_name = f"{name}_fold{fold}_{DATE_TAG}"
+def run(name, fold, seed=0):
+    kw = {**BASE, **CONFIGS.get(name, LONG_CONFIGS.get(name, {})), "seed": seed}
+    run_name = f"{name}_fold{fold}_seed{seed}_{DATE_TAG}" if seed else f"{name}_fold{fold}_{DATE_TAG}"
     print(f"\n{'='*70}\n {run_name}\n{'='*70}")
     t0 = time.time()
     try:
@@ -64,6 +75,12 @@ if __name__ == "__main__":
         for name in names:
             for fold in ("B", "C"):
                 run(name, fold)
+    elif mode == "seeds":
+        name, fold, seeds = sys.argv[2], sys.argv[3], [int(x) for x in sys.argv[4:]] or [1, 2]
+        for sd in seeds:
+            run(name, fold, seed=sd)
+    elif mode == "one":
+        run(sys.argv[2], sys.argv[3])
     else:
-        raise SystemExit("modo desconocido: usa 'screen' o 'folds <configs...>'")
+        raise SystemExit("modo desconocido: usa 'screen', 'folds <configs...>', 'seeds <config> <fold> <semillas...>' o 'one <config> <fold>'")
     print("\nHecho. Resumen: python summarize_results.py")
