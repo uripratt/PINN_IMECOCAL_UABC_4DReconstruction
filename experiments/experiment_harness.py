@@ -87,20 +87,39 @@ def sample_collocation(n_data, land_data, ocean_pool, land_ratio, ocean_ratio, m
 # ----------------------------------------------------------------------------
 # Pérdidas y evaluación
 # ----------------------------------------------------------------------------
-def compute_weighted_data_loss(pred_y, batch_y):
+def compute_weighted_data_loss(pred_y, batch_y, source_share=None):
     """Pérdida de datos multi-fidelidad ponderada por muestra (peso_entrenamiento, col. 4).
-    batch_y: [y_ctd, y_bottle, mask_ctd, mask_bottle, peso]."""
+    batch_y: [y_ctd, y_bottle, mask_ctd, mask_bottle, peso].
+
+    source_share=None: comportamiento histórico (suma ponderada de todas las muestras).
+    source_share=s (p. ej. 0.5): cada fuente aporta una cuota fija de la pérdida, así las
+    ~20.800 botellas no quedan diluidas por los ~2,2 M puntos de CTD (98,8 % del peso antes).
+    La cuota se aplica por lote y solo si la fuente tiene muestras en ese lote."""
     y_ctd, y_bottle = batch_y[:, 0:1], batch_y[:, 1:2]
     mask_ctd, mask_bottle, weight = batch_y[:, 2:3], batch_y[:, 3:4], batch_y[:, 4:5]
     target = y_ctd * mask_ctd + y_bottle * mask_bottle
     mask_any = torch.clamp(mask_ctd + mask_bottle, max=1.0)
-    return torch.sum(weight * mask_any * (pred_y - target) ** 2) / (torch.sum(weight * mask_any) + 1e-8)
+    if source_share is None:
+        return torch.sum(weight * mask_any * (pred_y - target) ** 2) / (torch.sum(weight * mask_any) + 1e-8)
+    err2 = weight * (pred_y - target) ** 2
+    w_c, w_b = weight * mask_ctd, weight * mask_bottle
+    l_c = torch.sum(w_c * (pred_y - target) ** 2) / (torch.sum(w_c) + 1e-8)
+    l_b = torch.sum(w_b * (pred_y - target) ** 2) / (torch.sum(w_b) + 1e-8)
+    has_c = torch.sum(mask_ctd) > 0
+    has_b = torch.sum(mask_bottle) > 0
+    if has_c and has_b:
+        return (1 - source_share) * l_c + source_share * l_b
+    if has_b:
+        return l_b
+    if has_c:
+        return l_c
+    return torch.sum(err2) * 0.0
 
 
-def compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss):
+def compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss, source_share=None):
     """Las 4 pérdidas de un paso (compartido por Adam y L-BFGS)."""
     pred = model(batch_x[:, 0:4])
-    l_data = compute_weighted_data_loss(pred, batch_y)
+    l_data = compute_weighted_data_loss(pred, batch_y, source_share)
 
     px = torch.cat([batch_x, ocean], dim=0) if ocean is not None else batch_x
     coords = px[:, 0:4].clone().requires_grad_(True)
@@ -121,24 +140,32 @@ def compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
 
 @torch.no_grad()
 def evaluate_loader(model, loader, device, clim_prior=None, const_value=None):
-    """Métricas sobre un loader (acumulando numeradores/denominadores, no medias de medias):
-    - mse_w: MSE ponderado en log1p (la misma cifra que 'Val_Loss' histórica)
-    - rmse_log10 / rmse_log10_bottle: RMSE en log10(Chl+0.01), todas las muestras / solo botella
-    - mse_clim / mse_const: MSE ponderado de la climatología de train / de la media de train
+    """Métricas sobre un loader (acumulando numeradores/denominadores, no medias de medias).
+    - mse_w / skill_*: sobre TODAS las muestras (CTD + botella).
+    - *_bottle: solo sobre botellas (referencia de laboratorio, métrica principal desde 2026-10-06).
+    - rmse_log10 / rmse_log10_bottle: RMSE en log10(Chl+0.01).
     """
     model.eval()
-    a = dict(se=0.0, w=0.0, se_c=0.0, se_k=0.0, e2=0.0, n=0, e2b=0.0, nb=0)
+    keys = ['se', 'w', 'se_c', 'se_k', 'e2', 'n', 'e2b', 'nb', 'se_b', 'w_b', 'se_cb', 'se_kb']
+    a = {k: 0.0 for k in keys}
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         pred = model(x[:, 0:4])
         m_ctd, m_bot, w = y[:, 2:3], y[:, 3:4], y[:, 4:5]
         target = y[:, 0:1] * m_ctd + y[:, 1:2] * m_bot
         m = torch.clamp(m_ctd + m_bot, max=1.0)
-        a['se'] += float(torch.sum(w * m * (pred - target) ** 2)); a['w'] += float(torch.sum(w * m))
+        se_all = (pred - target) ** 2
+        a['se'] += float(torch.sum(w * m * se_all)); a['w'] += float(torch.sum(w * m))
+        a['se_b'] += float(torch.sum(w * m_bot * se_all)); a['w_b'] += float(torch.sum(w * m_bot))
         if clim_prior is not None:
-            a['se_c'] += float(torch.sum(w * m * (clim_prior(x[:, 0:1], x[:, 1:2], x[:, 2:3]) - target) ** 2))
+            c = clim_prior(x[:, 0:1], x[:, 1:2], x[:, 2:3])
+            se_c = (c - target) ** 2
+            a['se_c'] += float(torch.sum(w * m * se_c))
+            a['se_cb'] += float(torch.sum(w * m_bot * se_c))
         if const_value is not None:
-            a['se_k'] += float(torch.sum(w * m * (const_value - target) ** 2))
+            se_k = (const_value - target) ** 2
+            a['se_k'] += float(torch.sum(w * m * se_k))
+            a['se_kb'] += float(torch.sum(w * m_bot * se_k))
         lp = torch.log10(torch.expm1(pred).clamp(min=0) + LOG10_EPS)
         lt = torch.log10(torch.expm1(target).clamp(min=0) + LOG10_EPS)
         e2 = (lp - lt) ** 2
@@ -147,13 +174,18 @@ def evaluate_loader(model, loader, device, clim_prior=None, const_value=None):
     out = {'mse_w': a['se'] / max(a['w'], 1e-8), 'n': a['n'],
            'rmse_log10': (a['e2'] / max(a['n'], 1)) ** 0.5,
            'rmse_log10_bottle': (a['e2b'] / a['nb']) ** 0.5 if a['nb'] > 0 else float('nan'),
-           'n_bottle': a['nb']}
+           'n_bottle': a['nb'],
+           'mse_w_bottle': a['se_b'] / max(a['w_b'], 1e-8)}
     if clim_prior is not None:
         out['mse_clim'] = a['se_c'] / max(a['w'], 1e-8)
         out['skill_clim'] = 1.0 - out['mse_w'] / out['mse_clim']
+        out['mse_clim_bottle'] = a['se_cb'] / max(a['w_b'], 1e-8)
+        out['skill_clim_bottle'] = 1.0 - out['mse_w_bottle'] / out['mse_clim_bottle'] if a['w_b'] > 0 else float('nan')
     if const_value is not None:
         out['mse_const'] = a['se_k'] / max(a['w'], 1e-8)
         out['skill_const'] = 1.0 - out['mse_w'] / out['mse_const']
+        out['mse_const_bottle'] = a['se_kb'] / max(a['w_b'], 1e-8)
+        out['skill_const_bottle'] = 1.0 - out['mse_w_bottle'] / out['mse_const_bottle'] if a['w_b'] > 0 else float('nan')
     return out
 
 
@@ -214,7 +246,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                use_seasonal=False, use_climatology_prior=False,
                lambda_phys_max=1.0, ocean_colloc_ratio=1.0,
                lr_schedule="cosine", min_lr_frac=0.02, patience=None, smooth_window=5,
-               fold="A", seed=0):
+               fold="A", seed=0, source_share=None):
     """
     Experiment Harness. Protocolo de evaluación (2026-09-25):
     - val (elige checkpoint y para) y test (se evalúa UNA vez al final) son cruceros distintos
@@ -328,7 +360,7 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 ocean, land = sample_collocation(batch_x.shape[0], land_data, ocean_pool, colloc_ratio,
                                                  ocean_colloc_ratio, max_time_days, max_depth, device)
                 optimizer.zero_grad()
-                l_data, l_phys, l_sat, l_dir = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                l_data, l_phys, l_sat, l_dir = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss, source_share)
                 loss = l_data + lam_phys * l_phys + lambda_sat * l_sat + lambda_dirichlet * l_dir
                 loss.backward()
                 optimizer.step()
@@ -364,14 +396,14 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
 
                     def closure():
                         opt_l.zero_grad()
-                        d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                        d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss, source_share)
                         t = d + lambda_phys_max * p + lambda_sat * s + lambda_dirichlet * r
                         t.backward()
                         return t
 
                     prev_state = {k: v.clone() for k, v in model.state_dict().items()}
                     opt_l.step(closure)
-                    d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss)
+                    d, p, s, r = compute_step_losses(model, physics, batch_x, batch_y, ocean, land, mse_loss, source_share)
                     if not all(np.isfinite(float(z)) for z in (d, p)):
                         print("\n[Advertencia] NaN detectado en L-BFGS. Revirtiendo pesos y cancelando L-BFGS.")
                         model.load_state_dict(prev_state)
@@ -405,6 +437,8 @@ def train_pinn(epochs=10, batch_size=256, lr=1e-3, curriculum_epochs=5, colloc_r
                 "Test_MSE": final_test['mse_w'], "Test_Skill_clim": final_test['skill_clim'],
                 "Test_Skill_const": final_test['skill_const'], "Test_RMSE_log10": final_test['rmse_log10'],
                 "Test_RMSE_log10_bottle": final_test['rmse_log10_bottle'],
+                "Test_Skill_clim_bottle": final_test.get('skill_clim_bottle', float('nan')),
+                "Test_Skill_const_bottle": final_test.get('skill_const_bottle', float('nan')),
                 "Test_Baseline_clim": final_test['mse_clim'], "Test_Baseline_const": final_test['mse_const'],
             })
         except Exception as e:

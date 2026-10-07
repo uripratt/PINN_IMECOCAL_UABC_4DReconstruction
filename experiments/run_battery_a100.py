@@ -45,6 +45,8 @@ CONFIGS = {
 # Sirve para la prueba de duración (paso 5 del plan). OJO: colloc_ratio es ahora la razón de
 # tierra; la fracción oceánica se mantiene en 1.0.
 LONG_CONFIGS = {
+    # S0 con reparto 50/50 por fuente (2026-10-06): las botellas aportan la mitad de la pérdida de datos.
+    "S7_base_share50":  dict(source_share=0.5),
     "L_legacy_10k":     dict(epochs=10000, batch_size=2048, lr=1e-4, curriculum_epochs=1000, patience=None,
                              lr_schedule="cosine", use_climatology_prior=False),
     "L_legacy_10k_S6":  dict(epochs=10000, batch_size=2048, lr=1e-4, curriculum_epochs=1000, patience=None,
